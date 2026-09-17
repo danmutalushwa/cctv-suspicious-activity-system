@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Full Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .log { background: #f8f9fa; padding: 10px; margin: 5px 0; border-radius: 4px; border-left: 3px solid #007bff; }
+        .log.error { border-left-color: #dc3545; background: #f8d7da; }
+        .log.success { border-left-color: #28a745; background: #d4edda; }
+        .log.alert { border-left-color: #ffc107; background: #fff3cd; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .status.online { background: #d4edda; color: #155724; }
+        .status.offline { background: #f8d7da; color: #721c24; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        input { padding: 8px; margin: 5px; border: 1px solid #ddd; border-radius: 4px; width: 200px; }
+        .stats { background: #e9ecef; padding: 10px; border-radius: 4px; margin: 10px 0; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
+        .badge.online { background: #28a745; color: white; }
+        .badge.offline { background: #dc3545; color: white; }
+        .badge.connected { background: #17a2b8; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 Socket.IO Real-time Test Client</h1>
+        
+        <div id="status" class="status offline">Disconnected</div>
+        
+        <div class="stats">
+            <strong>Statistics:</strong>
+            <span id="unreadCount">0</span> unread alerts |
+            <span id="alertCount">0</span> total alerts
+        </div>
+
+        <div>
+            <input type="text" id="tokenInput" placeholder="Enter JWT Token" style="width: 400px;">
+            <button onclick="connectSocket()">Connect</button>
+            <button onclick="disconnectSocket()" id="disconnectBtn" disabled>⛔ Disconnect</button>
+        </div>
+        
+        <div style="margin: 10px 0;">
+            <button onclick="requestUnreadCount()"> Get Unread Count</button>
+            <button onclick="createTestAlert()"> Create Test Alert</button>
+            <button onclick="clearLogs()"> Clear Logs</button>
+        </div>
+
+        <h3>Event Log</h3>
+        <div id="logs" style="max-height: 500px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 4px; background: #fafafa;">
+            <div class="log">Waiting for connection...</div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        let socket = null;
+        let isConnected = false;
+        let logCount = 0;
+
+        function connectSocket() {
+            const token = document.getElementById('tokenInput').value.trim();
+            if (!token) {
+                alert('Please enter a JWT token first!');
+                return;
+            }
+
+            if (socket) {
+                socket.disconnect();
+            }
+
+            // Add connection status indicator
+            updateStatus('connecting', 'Connecting...');
+
+            socket = io('http://localhost:5000', {
+                auth: { token },
+                transports: ['websocket', 'polling'],
+                reconnection: true,
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1000
+            });
+
+            // Connection events
+            socket.on('connect', () => {
+                isConnected = true;
+                updateStatus('online', 'Connected');
+                log('Connected to server', 'success');
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('tokenInput').disabled = true;
+                
+                // Request initial data
+                setTimeout(() => {
+                    requestUnreadCount();
+                }, 500);
+            });
+
+            socket.on('connect_error', (error) => {
+                log(`Connection error: ${error.message}`, 'error');
+                updateStatus('offline', 'Connection Error');
+            });
+
+            socket.on('disconnect', (reason) => {
+                isConnected = false;
+                updateStatus('offline', 'Disconnected');
+                log(`Disconnected: ${reason}`, 'error');
+                document.getElementById('disconnectBtn').disabled = true;
+                document.getElementById('tokenInput').disabled = false;
+            });
+
+            socket.on('error', (error) => {
+                log(`Socket error: ${error.message}`, 'error');
+            });
+
+            // Alert events
+            socket.on('new_alert', (data) => {
+                const alert = data.alert;
+                log(`NEW ALERT: ${alert.title} [${alert.priority}]`, 'alert');
+                log(`${alert.message.substring(0, 100)}...`, '');
+                updateStats();
+                
+                // Show browser notification if supported
+                if (Notification.permission === 'granted') {
+                    new Notification('New Alert!', {
+                        body: alert.title,
+                        icon: '🔔'
+                    });
+                }
+            });
+
+            socket.on('alert_acknowledged', (data) => {
+                log(`Alert ${data.alertId} acknowledged by user ${data.userId}`, 'success');
+                updateStats();
+            });
+
+            socket.on('incident_created', (data) => {
+                log(`New Incident: ${data.incident.title}`, 'alert');
+            });
+
+            socket.on('incident_updated', (data) => {
+                log(`Incident Updated: ${data.incident.title}`, '');
+            });
+
+            // Statistics events
+            socket.on('unread_count', (data) => {
+                document.getElementById('unreadCount').textContent = data.count;
+                log(`Unread alerts: ${data.count}`, '');
+            });
+
+            socket.on('reconnect', (attemptNumber) => {
+                log(`Reconnected after ${attemptNumber} attempts`, 'success');
+                updateStatus('online', 'Reconnected');
+            });
+
+            socket.on('reconnect_attempt', (attemptNumber) => {
+                log(`Reconnection attempt ${attemptNumber}...`, '');
+            });
+
+            socket.on('reconnect_error', (error) => {
+                log(`Reconnection error: ${error.message}`, 'error');
+            });
+
+            // Request notification permission
+            if (Notification.permission === 'default') {
+                Notification.requestPermission();
+            }
+        }
+
+        function disconnectSocket() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                isConnected = false;
+                log('🔌 Disconnected manually', '');
+                updateStatus('offline', 'Disconnected');
+                document.getElementById('disconnectBtn').disabled = true;
+                document.getElementById('tokenInput').disabled = false;
+            }
+        }
+
+        function requestUnreadCount() {
+            if (socket && isConnected) {
+                socket.emit('get_unread_count');
+                log('Requested unread count', '');
+            } else {
+                log('Not connected to server', 'error');
+            }
+        }
+
+        function createTestAlert() {
+            if (!socket || !isConnected) {
+                log('Not connected to server', 'error');
+                return;
+            }
+
+            const token = document.getElementById('tokenInput').value.trim();
+            fetch('/api/alerts', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    title: `Test Alert ${new Date().toLocaleTimeString()}`,
+                    message: 'This is a test alert from the Socket.IO test client',
+                    priority: ['low', 'medium', 'high', 'critical'][Math.floor(Math.random() * 4)],
+                    type: 'in_app',
+                    channels: ['in_app', 'socket']
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    log(`Test alert created: ${data.data.alert._id}`, 'success');
+                    setTimeout(() => requestUnreadCount(), 1000);
+                } else {
+                    log(`Failed to create alert: ${data.message}`, 'error');
+                }
+            })
+            .catch(error => {
+                log(`Error creating alert: ${error.message}`, 'error');
+            });
+        }
+
+        function updateStats() {
+            // Update alert count from unread count if available
+            const unread = document.getElementById('unreadCount').textContent;
+            // We could also request a full count here
+        }
+
+        function updateStatus(state, message) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${state}`;
+            statusDiv.textContent = message;
+        }
+
+        function log(message, type = '') {
+            const logsDiv = document.getElementById('logs');
+            const logEntry = document.createElement('div');
+            logEntry.className = `log ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logsDiv.appendChild(logEntry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+            logCount++;
+            
+            // Keep last 100 logs
+            if (logCount > 100) {
+                logsDiv.removeChild(logsDiv.firstChild);
+                logCount--;
+            }
+        }
+
+        function clearLogs() {
+            document.getElementById('logs').innerHTML = '<div class="log">Logs cleared</div>';
+            logCount = 0;
+        }
+
+        // Auto-connect with token from URL if provided
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const token = urlParams.get('token');
+            if (token) {
+                document.getElementById('tokenInput').value = token;
+                setTimeout(connectSocket, 1000);
+            }
+        };
+    </script>
+</body>
+</html>

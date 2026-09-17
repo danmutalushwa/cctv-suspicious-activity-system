@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  ai-service:
+    build: .
+    container_name: cctv-ai-service
+    ports:
+      - "5001:5001"
+    environment:
+      - AI_HOST=0.0.0.0
+      - AI_PORT=5001
+      - DEBUG=False
+      - CONFIDENCE_THRESHOLD=0.5
+      - IOU_THRESHOLD=0.45
+      - USE_GPU=False
+      - API_KEY=${API_KEY:-your-secret-api-key}
+    volumes:
+      - ./models:/app/models
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

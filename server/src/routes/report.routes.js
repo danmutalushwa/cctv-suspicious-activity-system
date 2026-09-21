@@ -8,25 +8,19 @@ const { USER_ROLES } = require('../config/constants');
 // All routes require authentication
 router.use(protect);
 
-// GET report statistics
+// 1. Static paths go first
 router.get('/statistics', reportController.getReportStatistics);
 
-// POST create report
+// 2. Base resource mutations
 router.post('/', reportController.createReport);
-
-// GET all reports
 router.get('/', reportController.getAllReports);
 
-// GET report by ID
-router.get('/:id', reportController.getReportById);
-
-// GET download report
+// 3. Multi-tier specific routes (MUST be above the generic /:id wildcard)
 router.get('/:id/download', reportController.downloadReport);
-
-// POST schedule report
 router.post('/:id/schedule', reportController.scheduleReport);
 
-// DELETE report
+// 4. Generic single-tier parameter wildcards go last
+router.get('/:id', reportController.getReportById);
 router.delete('/:id', reportController.deleteReport);
 
 module.exports = router;

@@ -93,7 +93,9 @@ const getMyAlerts = async (req, res) => {
       expiresAt: { $gt: new Date() }
     };
 
-    if (status) {
+    if (status === 'unread') {
+      filter['recipients.status'] = { $ne: 'read' };
+    } else if (status) {
       filter['recipients.status'] = status;
     }
     if (priority) {
@@ -308,42 +310,87 @@ const getAlertStatistics = async (req, res) => {
   try {
     const userId = req.userId;
 
-    const stats = await Alert.aggregate([
-      { $match: { 
-        'recipients.userId': userId,
-        isDeleted: false 
-      }},
-      {
-        $facet: {
-          unreadCount: [
-            { $match: { 'recipients.status': { $ne: 'read' } } },
-            { $count: 'count' }
-          ],
-          byPriority: [
-            { $group: { _id: '$priority', count: { $sum: 1 } } }
-          ],
-          byType: [
-            { $group: { _id: '$type', count: { $sum: 1 } } }
-          ],
-          recent: [
-            { $sort: { createdAt: -1 } },
-            { $limit: 5 }
-          ]
-        }
-      }
-    ]);
-
-    const statistics = {
-      unreadCount: stats[0].unreadCount[0]?.count || 0,
-      byPriority: stats[0].byPriority,
-      byType: stats[0].byType,
-      recent: stats[0].recent
+    const matchStage = {
+      isDeleted: false,
+      expiresAt: { $gt: new Date() },
+      'recipients.userId': userId,
     };
 
-    ApiResponse.success(res, statistics, 'Alert statistics retrieved successfully');
+    const stats = await Alert.aggregate([
+      { $match: matchStage },
+
+      // Work only with the current user's recipient record
+      { $unwind: '$recipients' },
+
+      {
+        $match: {
+          'recipients.userId': userId,
+        },
+      },
+
+      {
+        $facet: {
+          total: [
+            { $count: 'count' },
+          ],
+
+          unreadCount: [
+            {
+              $match: {
+                'recipients.status': { $ne: 'read' },
+              },
+            },
+            { $count: 'count' },
+          ],
+
+          byPriority: [
+            {
+              $group: {
+                _id: '$priority',
+                count: { $sum: 1 },
+              },
+            },
+          ],
+
+          byType: [
+            {
+              $group: {
+                _id: '$type',
+                count: { $sum: 1 },
+              },
+            },
+          ],
+
+          recent: [
+            { $sort: { createdAt: -1 } },
+            { $limit: 5 },
+          ],
+        },
+      },
+    ]);
+
+    const result = stats[0];
+
+    const statistics = {
+      total: result.total[0]?.count || 0,
+      unreadCount: result.unreadCount[0]?.count || 0,
+      byPriority: result.byPriority || [],
+      byType: result.byType || [],
+      recent: result.recent || [],
+    };
+
+    ApiResponse.success(
+      res,
+      statistics,
+      'Alert statistics retrieved successfully'
+    );
   } catch (error) {
     logger.error('Get alert statistics error:', error);
-    ApiResponse.error(res, error, 'Failed to retrieve alert statistics');
+    ApiResponse.error(
+      res,
+      error,
+      'Failed to retrieve alert statistics'
+    );
   }
 };
 

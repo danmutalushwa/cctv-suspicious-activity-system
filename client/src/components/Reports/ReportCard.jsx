@@ -7,7 +7,6 @@ import {
   MoreVertical,
   Calendar,
   HardDrive,
-  Clock,
 } from 'lucide-react';
 import { useState } from 'react';
 import Badge from '../Common/Badge';
@@ -17,18 +16,47 @@ import {
   REPORT_TYPE_LABELS,
   REPORT_FORMAT_LABELS,
 } from '../../constants/reportTypes';
-import { formatDate, formatRelativeTime } from '../../utils/formatDate';
+import { formatRelativeTime } from '../../utils/formatDate';
 import { formatFileSize } from '../../utils/formatFileSize';
 import { buildRoute } from '../../constants/routes';
 import { reportsAPI } from '../../api/reports';
 
 const ReportCard = ({ report, onDelete }) => {
   const [showMenu, setShowMenu] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
-  const handleDownload = () => {
-    if (report.status !== 'completed') return;
-    window.open(reportsAPI.getDownloadUrl(report._id), '_blank');
-    setShowMenu(false);
+  const handleDownload = async () => {
+    if (report.status !== 'completed' || isDownloading) return;
+    
+    try {
+      setIsDownloading(true);
+      
+      // 1. Invoke the forced-auth binary stream request handler
+      const response = await reportsAPI.downloadReportFile(report._id);
+
+      // 2. Safely capture the data payload regardless of interceptor unpacking mutations
+      const binaryPayload = response.data || response;
+      
+      // 3. Compile the binary chunks into a localized downloadable PDF blob instance
+      const blob = new Blob([binaryPayload], { type: 'application/pdf' });
+      const fileUrl = window.URL.createObjectURL(blob);
+      
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.href = fileUrl;
+      downloadAnchor.setAttribute('download', `${report.title.replace(/\s+/g, '_')}.pdf`);
+      
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      
+      // 4. Memory optimization cleanup
+      document.body.removeChild(downloadAnchor);
+      window.URL.revokeObjectURL(fileUrl);
+    } catch (error) {
+      console.error('Binary PDF construction sequence failed:', error);
+    } finally {
+      setIsDownloading(false);
+      setShowMenu(false);
+    }
   };
 
   const getFormatIcon = () => {
@@ -48,14 +76,10 @@ const ReportCard = ({ report, onDelete }) => {
   return (
     <div className="bg-white dark:bg-secondary-800 rounded-lg border border-secondary-200 dark:border-secondary-700 p-4 hover:shadow-md transition-shadow">
       <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div
-          className={`flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center ${getFormatColor()}`}
-        >
+        <div className={`flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center ${getFormatColor()}`}>
           {getFormatIcon()}
         </div>
 
-        {/* Content */}
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2 mb-1">
             <Link to={buildRoute.reportDetails(report._id)} className="flex-1 min-w-0">
@@ -64,7 +88,6 @@ const ReportCard = ({ report, onDelete }) => {
               </h3>
             </Link>
 
-            {/* Menu */}
             <div className="relative">
               <button
                 type="button"
@@ -80,11 +103,11 @@ const ReportCard = ({ report, onDelete }) => {
                   <button
                     type="button"
                     onClick={handleDownload}
-                    disabled={report.status !== 'completed'}
+                    disabled={report.status !== 'completed' || isDownloading}
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-secondary-700 dark:text-secondary-300 hover:bg-secondary-100 dark:hover:bg-secondary-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Download size={14} />
-                    Download
+                    {isDownloading ? 'Downloading...' : 'Download'}
                   </button>
                   {onDelete && (
                     <button

@@ -1,8 +1,8 @@
+import { useNotifications } from '../../hooks/useNotifications';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import {
   useAlert,
-  useMarkAlertAsRead,
   useAcknowledgeAlert,
 } from '../../hooks/useAlerts';
 import PageHeader from '../../components/Layout/PageHeader';
@@ -17,7 +17,7 @@ const AlertDetailsPage = () => {
   const navigate = useNavigate();
 
   const { data, isLoading, isError, error } = useAlert(id);
-  const markAsReadMutation = useMarkAlertAsRead();
+  const { markAsRead } = useNotifications();
   const acknowledgeMutation = useAcknowledgeAlert();
 
   const alert = data?.data?.alert;
@@ -55,9 +55,9 @@ const AlertDetailsPage = () => {
 
       <AlertDetailsComponent
         alert={alert}
-        onMarkAsRead={(id) => markAsReadMutation.mutate(id)}
+        onMarkAsRead={markAsRead}
         onAcknowledge={(id) => acknowledgeMutation.mutate(id)}
-        loading={markAsReadMutation.isPending || acknowledgeMutation.isPending}
+        loading={acknowledgeMutation.isPending}
       />
     </>
   );

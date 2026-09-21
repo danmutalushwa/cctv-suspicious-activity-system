@@ -5,100 +5,194 @@ const logger = require('../utils/logger');
 const videoService = require('../services/video.service');
 const aiService = require('../services/ai.service');
 const aiIncidentService = require('../services/ai-incident.service');
+
 const fs = require('fs');
 const path = require('path');
 
 /**
+ * ---------------------------------------------------------
+ * Helper: Convert a server filesystem path into a browser URL
+ * ---------------------------------------------------------
+ *
+ * Example:
+ *
+ * Windows path:
+ * E:\cctv-suspicious-activity-system\server\uploads\videos\abc-thumb.jpg
+ *
+ * Browser URL:
+ * http://localhost:5000/uploads/videos/abc-thumb.jpg
+ */
+const getUploadUrl = (req, filePath) => {
+  if (!filePath) {
+    return null;
+  }
+
+  try {
+    const uploadsRoot = path.resolve(
+      __dirname,
+      '../../uploads'
+    );
+
+    const absoluteFilePath = path.resolve(filePath);
+
+    const relativePath = path
+      .relative(uploadsRoot, absoluteFilePath)
+      .replace(/\\/g, '/');
+
+    // Prevent files outside the uploads directory
+    if (
+      relativePath.startsWith('../') ||
+      path.isAbsolute(relativePath)
+    ) {
+      return null;
+    }
+
+    return `${req.protocol}://${req.get('host')}/uploads/${relativePath}`;
+  } catch (error) {
+    logger.error(
+      `Failed to create upload URL: ${error.message}`
+    );
+
+    return null;
+  }
+};
+
+/**
+ * ---------------------------------------------------------
  * Upload video
+ * ---------------------------------------------------------
  */
 const uploadVideo = async (req, res) => {
   try {
     if (!req.file) {
-      return ApiResponse.badRequest(res, 'No video file uploaded');
+      return ApiResponse.badRequest(
+        res,
+        'No video file uploaded'
+      );
     }
 
-    const { title, description, incidentId, cameraId, isPublic } = req.body;
+    const {
+      title,
+      description,
+      incidentId,
+      cameraId,
+      isPublic
+    } = req.body;
 
     // Validate video
-    const validation = await videoService.validateVideo(req.file.path);
+    const validation = await videoService.validateVideo(
+      req.file.path
+    );
 
     if (!validation.valid) {
-      await videoService.deleteVideoFile(req.file.path);
+      await videoService.deleteVideoFile(
+        req.file.path
+      );
 
       return ApiResponse.badRequest(
         res,
         `Invalid video: ${
-          validation.errors?.join(', ') || validation.error
+          validation.errors?.join(', ') ||
+          validation.error
         }`
       );
     }
 
     // Create video record
     const videoData = {
-      title: title || req.file.originalname,
-      description: description || '',
-      filename: req.file.filename,
-      originalName: req.file.originalname,
-      fileSize: req.file.size,
-      mimeType: req.file.mimetype,
-      path: req.file.path,
-      uploadedBy: req.userId,
-      status: 'processing',
-      isPublic: isPublic === 'true' || isPublic === true
+      title:
+        title ||
+        req.file.originalname,
+
+      description:
+        description || '',
+
+      filename:
+        req.file.filename,
+
+      originalName:
+        req.file.originalname,
+
+      fileSize:
+        req.file.size,
+
+      mimeType:
+        req.file.mimetype,
+
+      path:
+        req.file.path,
+
+      uploadedBy:
+        req.userId,
+
+      status:
+        'processing',
+
+      isPublic:
+        isPublic === 'true' ||
+        isPublic === true
     };
 
-    // Add incident reference if provided
+    // Incident reference
     if (incidentId) {
-      const incident = await Incident.findById(incidentId);
+      const incident =
+        await Incident.findById(
+          incidentId
+        );
 
       if (incident) {
-        videoData.incidentId = incidentId;
+        videoData.incidentId =
+          incidentId;
       }
     }
 
-    // Add camera reference if provided
+    // Camera reference
     if (cameraId) {
-      videoData.cameraId = cameraId;
+      videoData.cameraId =
+        cameraId;
     }
 
-    const video = await Video.create(videoData);
+    const video =
+      await Video.create(videoData);
 
-    /*
-     * Start video processing in the background.
-     *
-     * This includes:
-     * 1. Metadata extraction
-     * 2. Thumbnail generation
-     * 3. AI frame extraction
-     * 4. AI suspicious-activity analysis
-     * 5. Temporary frame cleanup
-     *
-     * We intentionally do not await this function because
-     * the user should receive the upload response immediately.
+    /**
+     * Start processing in background.
      */
-    processVideoAsync(video._id, req.file.path, video);
+    processVideoAsync(
+      video._id,
+      req.file.path,
+      video
+    );
 
     logger.info(
       `Video uploaded: ${video.filename} by ${req.user.email}`
     );
 
-    ApiResponse.created(
+    return ApiResponse.created(
       res,
       {
         video,
-        message: 'Video uploaded successfully. Processing in background.'
+        message:
+          'Video uploaded successfully. Processing in background.'
       },
       'Video upload initiated'
     );
   } catch (error) {
-    logger.error('Upload video error:', error);
+    logger.error(
+      'Upload video error:',
+      error
+    );
 
-    // Delete uploaded file if an error occurs
-    if (req.file && req.file.path) {
-      await videoService.deleteVideoFile(req.file.path);
+    if (
+      req.file &&
+      req.file.path
+    ) {
+      await videoService.deleteVideoFile(
+        req.file.path
+      );
     }
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to upload video'
@@ -107,31 +201,15 @@ const uploadVideo = async (req, res) => {
 };
 
 /**
+ * ---------------------------------------------------------
  * Process video asynchronously
- *
- * Processing pipeline:
- *
- * Video
- *   ↓
- * Extract metadata
- *   ↓
- * Generate thumbnail
- *   ↓
- * Extract frames
- *   ↓
- * Send frames to Python AI service
- *   ↓
- * Detect suspicious activities
- *   ↓
- * Collect AI results
- *   ↓
- * Clean temporary frames
- *
- * NOTE:
- * We are not creating incidents or alerts yet.
- * That will be added after the AI pipeline is verified.
+ * ---------------------------------------------------------
  */
-const processVideoAsync = async (videoId, filePath, video) => {
+const processVideoAsync = async (
+  videoId,
+  filePath,
+  video
+) => {
   let frameDir = null;
 
   try {
@@ -139,48 +217,46 @@ const processVideoAsync = async (videoId, filePath, video) => {
       `Starting video processing: ${video.filename}`
     );
 
-    // --------------------------------------------------
-    // 1. Extract video metadata
-    // --------------------------------------------------
-
-    const metadata = await videoService.extractVideoMetadata(
-      filePath
-    );
+    // 1. Extract metadata
+    const metadata =
+      await videoService.extractVideoMetadata(
+        filePath
+      );
 
     logger.info(
       `Video metadata extracted: ${video.filename}`
     );
 
-    // --------------------------------------------------
     // 2. Generate thumbnail
-    // --------------------------------------------------
+    const uploadDir =
+      path.dirname(filePath);
 
-    const uploadDir = path.dirname(filePath);
+    const thumbnailPath =
+      await videoService.generateThumbnail(
+        filePath,
+        uploadDir,
+        {
+          size: '320x240',
 
-    const thumbnailPath = await videoService.generateThumbnail(
-      filePath,
-      uploadDir,
-      {
-        size: '320x240',
-        timestamp: Math.min(
-          metadata.duration / 2,
-          5
-        ),
-        filename: `${path.basename(
-          filePath,
-          path.extname(filePath)
-        )}-thumb.jpg`
-      }
-    );
+          timestamp:
+            Math.min(
+              metadata.duration / 2,
+              5
+            ),
+
+          filename:
+            `${path.basename(
+              filePath,
+              path.extname(filePath)
+            )}-thumb.jpg`
+        }
+      );
 
     logger.info(
       `Video thumbnail generated: ${thumbnailPath}`
     );
 
-    // --------------------------------------------------
-    // 3. Create temporary directory for AI frames
-    // --------------------------------------------------
-
+    // 3. Create temporary AI frame directory
     frameDir = path.join(
       uploadDir,
       `${path.basename(
@@ -189,32 +265,27 @@ const processVideoAsync = async (videoId, filePath, video) => {
       )}-ai-frames`
     );
 
-    // --------------------------------------------------
-    // 4. Extract frames for AI analysis
-    // --------------------------------------------------
-
+    // 4. Extract frames
     logger.info(
       `Extracting frames for AI analysis: ${video.filename}`
     );
 
-    const framePaths = await videoService.extractFramesForAI(
-      filePath,
-      frameDir,
-      {
-        interval: 2,
-        maxFrames: 300,
-        imageSize: '640x360'
-      }
-    );
+    const framePaths =
+      await videoService.extractFramesForAI(
+        filePath,
+        frameDir,
+        {
+          interval: 2,
+          maxFrames: 300,
+          imageSize: '640x360'
+        }
+      );
 
     logger.info(
       `Extracted ${framePaths.length} AI frames from ${video.filename}`
     );
 
-    // --------------------------------------------------
-    // 5. Send extracted frames to Python AI service
-    // --------------------------------------------------
-
+    // 5. AI analysis
     let aiResults = [];
 
     if (framePaths.length > 0) {
@@ -222,13 +293,10 @@ const processVideoAsync = async (videoId, filePath, video) => {
         `Starting AI analysis for ${framePaths.length} frames`
       );
 
-      aiResults = await aiService.analyzeFrames(
-        framePaths
-      );
-
-      logger.info(
-        `Row AI results: ${JSON.stringify(aiResults, null, 2)}`
-      );
+      aiResults =
+        await aiService.analyzeFrames(
+          framePaths
+        );
 
       logger.info(
         `AI analysis completed for ${video.filename}`
@@ -239,35 +307,38 @@ const processVideoAsync = async (videoId, filePath, video) => {
       );
     }
 
-    // --------------------------------------------------
     // 6. Find suspicious results
-    // --------------------------------------------------
+    const suspiciousResults =
+      aiResults.filter(
+        result =>
+          result &&
+          result.success &&
+          result.is_suspicious === true &&
+          Array.isArray(
+            result.suspicious_activities
+          ) &&
+          result.suspicious_activities.length > 0
+      );
 
-    const suspiciousResults = aiResults.filter(
-      result =>
-        result &&
-        result.success &&
-        result.is_suspicious === true &&
-        Array.isArray(result.suspicious_activities) &&
-        result.suspicious_activities.length > 0
-    );
-
-    // --------------------------------------------------
-    // Create incidents from suspicious AI results
-    // --------------------------------------------------
-
+    // 7. Create incidents
     let createdIncidents = [];
 
-    if (suspiciousResults.length > 0) {
+    if (
+      suspiciousResults.length > 0
+    ) {
       logger.info(
         `Creating incidents from ${suspiciousResults.length} suspicious AI results`
       );
 
       createdIncidents =
-        await aiIncidentService.processAIResults({
-          aiResults: suspiciousResults,
-          video
-        });
+        await aiIncidentService.processAIResults(
+          {
+            aiResults:
+              suspiciousResults,
+
+            video
+          }
+        );
 
       logger.info(
         `Created ${createdIncidents.length} incidents from AI analysis`
@@ -278,68 +349,78 @@ const processVideoAsync = async (videoId, filePath, video) => {
       `AI detected ${suspiciousResults.length} suspicious frames for ${video.filename}`
     );
 
-    // --------------------------------------------------
-    // 7. Log suspicious activity summary
-    // --------------------------------------------------
-
-    if (suspiciousResults.length > 0) {
+    // 8. Log results
+    if (
+      suspiciousResults.length > 0
+    ) {
       logger.warn(
         `Suspicious activity detected in video: ${video.filename}`
       );
 
-      suspiciousResults.forEach((result, index) => {
-        logger.warn(
-          `Suspicious result ${index + 1}: ${JSON.stringify(
-            result.suspicious_activities
-          )}`
-        );
-      });
+      suspiciousResults.forEach(
+        (result, index) => {
+          logger.warn(
+            `Suspicious result ${index + 1}: ${JSON.stringify(
+              result.suspicious_activities
+            )}`
+          );
+        }
+      );
     } else {
       logger.info(
         `No suspicious activity detected in video: ${video.filename}`
       );
     }
 
-    // --------------------------------------------------
-    // 8. Update video record
-    // --------------------------------------------------
+    // 9. Update video
+    await Video.findByIdAndUpdate(
+      videoId,
+      {
+        status: 'completed',
 
-    await Video.findByIdAndUpdate(videoId, {
-      status: 'completed',
+        duration:
+          metadata.duration,
 
-      duration: metadata.duration,
+        resolution:
+          metadata.video
+            ? {
+                width:
+                  metadata.video.width,
 
-      resolution: metadata.video
-        ? {
-            width: metadata.video.width,
-            height: metadata.video.height
-          }
-        : null,
+                height:
+                  metadata.video.height
+              }
+            : null,
 
-      framerate: metadata.video?.framerate,
+        framerate:
+          metadata.video?.framerate,
 
-      bitrate: metadata.bitrate,
+        bitrate:
+          metadata.bitrate,
 
-      codec: metadata.video?.codec,
+        codec:
+          metadata.video?.codec,
 
-      thumbnailPath: thumbnailPath
-    });
+        thumbnailPath:
+          thumbnailPath
+      }
+    );
 
     logger.info(
       `Video processed successfully: ${video.filename}`
     );
 
-    // --------------------------------------------------
-    // 9. Return processing result
-    // --------------------------------------------------
-
     return {
       success: true,
       videoId,
-      frameCount: framePaths.length,
-      aiResultsCount: aiResults.length,
-      suspiciousResultsCount: suspiciousResults.length,
-      incidentsCreated: createdIncidents.length
+      frameCount:
+        framePaths.length,
+      aiResultsCount:
+        aiResults.length,
+      suspiciousResultsCount:
+        suspiciousResults.length,
+      incidentsCreated:
+        createdIncidents.length
     };
   } catch (error) {
     logger.error(
@@ -347,12 +428,15 @@ const processVideoAsync = async (videoId, filePath, video) => {
       error
     );
 
-    // Mark video as failed
     try {
-      await Video.findByIdAndUpdate(videoId, {
-        status: 'failed',
-        processingError: error.message
-      });
+      await Video.findByIdAndUpdate(
+        videoId,
+        {
+          status: 'failed',
+          processingError:
+            error.message
+        }
+      );
     } catch (updateError) {
       logger.error(
         `Failed to update video processing status: ${updateError.message}`
@@ -365,10 +449,6 @@ const processVideoAsync = async (videoId, filePath, video) => {
       error: error.message
     };
   } finally {
-    // --------------------------------------------------
-    // 10. Clean up temporary AI frames
-    // --------------------------------------------------
-
     if (frameDir) {
       logger.info(
         `AI frames retained temporarily for debugging: ${frameDir}`
@@ -378,9 +458,14 @@ const processVideoAsync = async (videoId, filePath, video) => {
 };
 
 /**
- * Get all videos with pagination
+ * ---------------------------------------------------------
+ * Get all videos
+ * ---------------------------------------------------------
  */
-const getAllVideos = async (req, res) => {
+const getAllVideos = async (
+  req,
+  res
+) => {
   try {
     const {
       page = 1,
@@ -409,20 +494,20 @@ const getAllVideos = async (req, res) => {
       filter.incidentId = incidentId;
     }
 
-    // Date range filter
     if (startDate || endDate) {
       filter.createdAt = {};
 
       if (startDate) {
-        filter.createdAt.$gte = new Date(startDate);
+        filter.createdAt.$gte =
+          new Date(startDate);
       }
 
       if (endDate) {
-        filter.createdAt.$lte = new Date(endDate);
+        filter.createdAt.$lte =
+          new Date(endDate);
       }
     }
 
-    // Search in title, description and original filename
     if (search) {
       filter.$or = [
         {
@@ -446,40 +531,87 @@ const getAllVideos = async (req, res) => {
       ];
     }
 
-    const skip = (page - 1) * limit;
+    const skip =
+      (page - 1) * limit;
 
-    const [videos, total] = await Promise.all([
+    const [
+      videos,
+      total
+    ] = await Promise.all([
       Video.find(filter)
-        .populate('uploadedBy', 'name email')
-        .populate('cameraId', 'name location')
+        .populate(
+          'uploadedBy',
+          'name email'
+        )
+        .populate(
+          'cameraId',
+          'name location'
+        )
         .populate(
           'incidentId',
           'incidentNumber title type'
         )
-        .sort({ createdAt: -1 })
+        .sort({
+          createdAt: -1
+        })
         .skip(skip)
-        .limit(parseInt(limit)),
+        .limit(
+          parseInt(limit)
+        ),
 
       Video.countDocuments(filter)
     ]);
 
-    ApiResponse.success(
+    // Add browser URLs
+    const videosWithUrls =
+      videos.map(video => {
+        const videoObject =
+          video.toObject();
+
+        videoObject.streamUrl =
+          `${req.protocol}://${req.get(
+            'host'
+          )}/api/videos/${video._id}/stream`;
+
+        videoObject.downloadUrl =
+          `${req.protocol}://${req.get(
+            'host'
+          )}/api/videos/${video._id}/download`;
+
+        videoObject.thumbnailUrl =
+          getUploadUrl(
+            req,
+            video.thumbnailPath
+          );
+
+        return videoObject;
+      });
+
+    return ApiResponse.success(
       res,
       {
-        videos,
+        videos:
+          videosWithUrls,
+
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
           total,
-          pages: Math.ceil(total / limit)
+          pages:
+            Math.ceil(
+              total / limit
+            )
         }
       },
       'Videos retrieved successfully'
     );
   } catch (error) {
-    logger.error('Get videos error:', error);
+    logger.error(
+      'Get videos error:',
+      error
+    );
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to retrieve videos'
@@ -488,41 +620,80 @@ const getAllVideos = async (req, res) => {
 };
 
 /**
+ * ---------------------------------------------------------
  * Get video by ID
+ * ---------------------------------------------------------
  */
-const getVideoById = async (req, res) => {
+const getVideoById = async (
+  req,
+  res
+) => {
   try {
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    const video = await Video.findById(id)
-      .populate('uploadedBy', 'name email')
-      .populate('cameraId', 'name location')
-      .populate(
-        'incidentId',
-        'incidentNumber title type severity'
-      );
+    const video =
+      await Video.findById(id)
+        .populate(
+          'uploadedBy',
+          'name email'
+        )
+        .populate(
+          'cameraId',
+          'name location'
+        )
+        .populate(
+          'incidentId',
+          'incidentNumber title type severity'
+        );
 
-    if (!video || video.isDeleted) {
+    if (
+      !video ||
+      video.isDeleted
+    ) {
       return ApiResponse.notFound(
         res,
         'Video not found'
       );
     }
 
-    // Increment view count
     await video.incrementViews();
 
-    ApiResponse.success(
+    const videoObject =
+      video.toObject();
+
+    // Browser URLs
+    videoObject.streamUrl =
+      `${req.protocol}://${req.get(
+        'host'
+      )}/api/videos/${video._id}/stream`;
+
+    videoObject.downloadUrl =
+      `${req.protocol}://${req.get(
+        'host'
+      )}/api/videos/${video._id}/download`;
+
+    videoObject.thumbnailUrl =
+      getUploadUrl(
+        req,
+        video.thumbnailPath
+      );
+
+    return ApiResponse.success(
       res,
       {
-        video
+        video:
+          videoObject
       },
       'Video retrieved successfully'
     );
   } catch (error) {
-    logger.error('Get video error:', error);
+    logger.error(
+      'Get video error:',
+      error
+    );
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to retrieve video'
@@ -531,117 +702,287 @@ const getVideoById = async (req, res) => {
 };
 
 /**
+ * ---------------------------------------------------------
  * Stream video
+ * ---------------------------------------------------------
  */
-const streamVideo = async (req, res) => {
+const streamVideo = async (
+  req,
+  res
+) => {
   try {
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    const video = await Video.findById(id);
+    const video =
+      await Video.findById(id);
 
-    if (!video || video.isDeleted) {
+    if (
+      !video ||
+      video.isDeleted
+    ) {
       return ApiResponse.notFound(
         res,
         'Video not found'
       );
     }
 
-    const filePath = video.path;
+    const filePath =
+      video.path;
 
-    // Check that file exists
-    if (!fs.existsSync(filePath)) {
+    if (
+      !filePath ||
+      !fs.existsSync(filePath)
+    ) {
+      logger.error(
+        `Video file does not exist: ${filePath}`
+      );
+
       return ApiResponse.notFound(
         res,
         'Video file not found'
       );
     }
 
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
+    const stat =
+      fs.statSync(filePath);
 
+    const fileSize =
+      stat.size;
+
+    const range =
+      req.headers.range;
+
+    /*
+     * IMPORTANT:
+     * These headers allow the browser to
+     * play a cross-origin video stream.
+     */
+    res.setHeader(
+      'Access-Control-Allow-Origin',
+      'http://localhost:3000'
+    );
+
+    res.setHeader(
+      'Access-Control-Allow-Credentials',
+      'true'
+    );
+
+    res.setHeader(
+      'Cross-Origin-Resource-Policy',
+      'cross-origin'
+    );
+
+    res.setHeader(
+      'Accept-Ranges',
+      'bytes'
+    );
+
+    res.setHeader(
+      'Content-Disposition',
+      'inline'
+    );
+
+    res.setHeader(
+      'Cache-Control',
+      'no-cache'
+    );
+
+    /*
+     * Browser requested a specific range.
+     */
     if (range) {
-      // Parse range header
-      const parts = range
-        .replace(/bytes=/, '')
-        .split('-');
+      const parts =
+        range
+          .replace(/bytes=/, '')
+          .split('-');
 
-      const start = parseInt(parts[0], 10);
+      let start =
+        parseInt(parts[0], 10);
 
-      const end = parts[1]
-        ? parseInt(parts[1], 10)
-        : fileSize - 1;
+      let end =
+        parts[1]
+          ? parseInt(parts[1], 10)
+          : fileSize - 1;
+
+      // Validate range
+      if (
+        Number.isNaN(start) ||
+        start < 0
+      ) {
+        start = 0;
+      }
+
+      if (
+        Number.isNaN(end) ||
+        end >= fileSize
+      ) {
+        end = fileSize - 1;
+      }
+
+      if (start > end) {
+        res.status(416);
+
+        res.setHeader(
+          'Content-Range',
+          `bytes */${fileSize}`
+        );
+
+        return res.end();
+      }
 
       const chunksize =
         end - start + 1;
 
-      const file = fs.createReadStream(
-        filePath,
-        {
-          start,
-          end
+      res.status(206);
+
+      res.setHeader(
+        'Content-Range',
+        `bytes ${start}-${end}/${fileSize}`
+      );
+
+      res.setHeader(
+        'Content-Length',
+        chunksize
+      );
+
+      res.setHeader(
+        'Content-Type',
+        video.mimeType ||
+          'video/mp4'
+      );
+
+      const file =
+        fs.createReadStream(
+          filePath,
+          {
+            start,
+            end
+          }
+        );
+
+      file.on(
+        'error',
+        error => {
+          logger.error(
+            'Video stream error:',
+            error
+          );
+
+          if (
+            !res.headersSent
+          ) {
+            res.status(500);
+          }
+
+          res.end();
         }
       );
 
-      const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': chunksize,
-        'Content-Type': video.mimeType
-      };
-
-      res.writeHead(206, head);
-
       file.pipe(res);
     } else {
-      // No range header
-      const head = {
-        'Content-Length': fileSize,
-        'Content-Type': video.mimeType
-      };
+      /*
+       * Browser did not send a Range header.
+       */
+      res.status(200);
 
-      res.writeHead(200, head);
+      res.setHeader(
+        'Content-Length',
+        fileSize
+      );
 
-      fs.createReadStream(filePath).pipe(res);
+      res.setHeader(
+        'Content-Type',
+        video.mimeType ||
+          'video/mp4'
+      );
+
+      const file =
+        fs.createReadStream(
+          filePath
+        );
+
+      file.on(
+        'error',
+        error => {
+          logger.error(
+            'Video stream error:',
+            error
+          );
+
+          if (
+            !res.headersSent
+          ) {
+            res.status(500);
+          }
+
+          res.end();
+        }
+      );
+
+      file.pipe(res);
     }
 
-    // Increment download count
-    await video.incrementDownloads();
+    // Count stream as a download/view
+    try {
+      await video.incrementDownloads();
+    } catch (error) {
+      logger.warn(
+        `Failed to increment video download count: ${error.message}`
+      );
+    }
   } catch (error) {
     logger.error(
       'Stream video error:',
       error
     );
 
-    if (!res.headersSent) {
-      ApiResponse.error(
+    if (
+      !res.headersSent
+    ) {
+      return ApiResponse.error(
         res,
         error,
         'Failed to stream video'
       );
     }
+
+    res.end();
   }
 };
 
 /**
+ * ---------------------------------------------------------
  * Download video
+ * ---------------------------------------------------------
  */
-const downloadVideo = async (req, res) => {
+const downloadVideo = async (
+  req,
+  res
+) => {
   try {
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    const video = await Video.findById(id);
+    const video =
+      await Video.findById(id);
 
-    if (!video || video.isDeleted) {
+    if (
+      !video ||
+      video.isDeleted
+    ) {
       return ApiResponse.notFound(
         res,
         'Video not found'
       );
     }
 
-    const filePath = video.path;
+    const filePath =
+      video.path;
 
-    if (!fs.existsSync(filePath)) {
+    if (
+      !fs.existsSync(filePath)
+    ) {
       return ApiResponse.notFound(
         res,
         'Video file not found'
@@ -651,25 +992,35 @@ const downloadVideo = async (req, res) => {
     res.download(
       filePath,
       video.originalName,
-      async err => {
-        if (err) {
+      async error => {
+        if (error) {
           logger.error(
             'Download video error:',
-            err
+            error
           );
 
-          if (!res.headersSent) {
+          if (
+            !res.headersSent
+          ) {
             ApiResponse.error(
               res,
-              err,
+              error,
               'Failed to download video'
             );
           }
-        } else {
+
+          return;
+        }
+
+        try {
           await video.incrementDownloads();
 
           logger.info(
             `Video downloaded: ${video.filename} by ${req.user.email}`
+          );
+        } catch (countError) {
+          logger.warn(
+            `Failed to increment download count: ${countError.message}`
           );
         }
       }
@@ -680,7 +1031,7 @@ const downloadVideo = async (req, res) => {
       error
     );
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to download video'
@@ -689,11 +1040,17 @@ const downloadVideo = async (req, res) => {
 };
 
 /**
+ * ---------------------------------------------------------
  * Update video metadata
+ * ---------------------------------------------------------
  */
-const updateVideo = async (req, res) => {
+const updateVideo = async (
+  req,
+  res
+) => {
   try {
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
     const {
       title,
@@ -702,9 +1059,13 @@ const updateVideo = async (req, res) => {
       tags
     } = req.body;
 
-    const video = await Video.findById(id);
+    const video =
+      await Video.findById(id);
 
-    if (!video || video.isDeleted) {
+    if (
+      !video ||
+      video.isDeleted
+    ) {
       return ApiResponse.notFound(
         res,
         'Video not found'
@@ -716,20 +1077,25 @@ const updateVideo = async (req, res) => {
     }
 
     if (description) {
-      video.description = description;
+      video.description =
+        description;
     }
 
-    if (isPublic !== undefined) {
-      video.isPublic = isPublic;
+    if (
+      isPublic !== undefined
+    ) {
+      video.isPublic =
+        isPublic;
     }
 
     if (tags) {
-      video.metadata.tags = tags;
+      video.metadata.tags =
+        tags;
     }
 
     await video.save();
 
-    ApiResponse.success(
+    return ApiResponse.success(
       res,
       {
         video
@@ -742,7 +1108,7 @@ const updateVideo = async (req, res) => {
       error
     );
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to update video'
@@ -751,40 +1117,40 @@ const updateVideo = async (req, res) => {
 };
 
 /**
+ * ---------------------------------------------------------
  * Delete video
+ * ---------------------------------------------------------
  */
-const deleteVideo = async (req, res) => {
+const deleteVideo = async (
+  req,
+  res
+) => {
   try {
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    const video = await Video.findById(id);
+    const video =
+      await Video.findById(id);
 
-    if (!video || video.isDeleted) {
+    if (
+      !video ||
+      video.isDeleted
+    ) {
       return ApiResponse.notFound(
         res,
         'Video not found'
       );
     }
 
-    // Soft delete
     video.isDeleted = true;
 
     await video.save();
-
-    // Optionally delete physical files
-    // await videoService.deleteVideoFile(video.path);
-
-    // if (video.thumbnailPath) {
-    //   await videoService.deleteVideoFile(
-    //     video.thumbnailPath
-    //   );
-    // }
 
     logger.info(
       `Video deleted: ${video.filename} by ${req.user.email}`
     );
 
-    ApiResponse.success(
+    return ApiResponse.success(
       res,
       null,
       'Video deleted successfully'
@@ -795,7 +1161,7 @@ const deleteVideo = async (req, res) => {
       error
     );
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to delete video'
@@ -804,53 +1170,61 @@ const deleteVideo = async (req, res) => {
 };
 
 /**
+ * ---------------------------------------------------------
  * Get video statistics
+ * ---------------------------------------------------------
  */
-const getVideoStatistics = async (req, res) => {
+const getVideoStatistics = async (
+  req,
+  res
+) => {
   try {
-    const stats = await Video.getStatistics();
+    const stats =
+      await Video.getStatistics();
 
-    // Get total storage used
-    const totalSize = await Video.aggregate([
-      {
-        $match: {
-          isDeleted: false
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: {
-            $sum: '$fileSize'
+    const totalSize =
+      await Video.aggregate([
+        {
+          $match: {
+            isDeleted: false
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: {
+              $sum: '$fileSize'
+            }
           }
         }
-      }
-    ]);
+      ]);
 
     const statistics = {
       total:
-        stats[0].total[0]?.count || 0,
+        stats[0]?.total?.[0]
+          ?.count || 0,
 
       totalSize:
         totalSize[0]?.total || 0,
 
       totalSizeMB:
         (
-          (totalSize[0]?.total || 0) /
+          (totalSize[0]?.total ||
+            0) /
           (1024 * 1024)
         ).toFixed(2),
 
       byCamera:
-        stats[0].byCamera || [],
+        stats[0]?.byCamera || [],
 
       byStatus:
-        stats[0].byStatus || [],
+        stats[0]?.byStatus || [],
 
       recent:
-        stats[0].recent || []
+        stats[0]?.recent || []
     };
 
-    ApiResponse.success(
+    return ApiResponse.success(
       res,
       statistics,
       'Video statistics retrieved successfully'
@@ -861,7 +1235,7 @@ const getVideoStatistics = async (req, res) => {
       error
     );
 
-    ApiResponse.error(
+    return ApiResponse.error(
       res,
       error,
       'Failed to retrieve statistics'

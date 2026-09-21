@@ -39,7 +39,7 @@ const AuthLayout = () => {
 
         <div className="relative z-10">
           <h2 className="text-4xl font-bold mb-4 leading-tight">
-            AI-Powered Suspicious Activity Detection
+            Intelligent CCTV-Based Suspicious Activity Detection 
           </h2>
           <p className="text-lg text-primary-100 mb-8">
             Monitor, detect, and respond to security threats in real-time with advanced AI technology.

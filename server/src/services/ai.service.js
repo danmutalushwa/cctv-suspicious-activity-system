@@ -1,239 +1,131 @@
+const axios = require('axios');
+const FormData = require('form-data');
+const fs = require('fs');
+const config = require('../config/env');
 const logger = require('../utils/logger');
 
-class AIService {
-  constructor() {
-    this.baseURL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000/api/v1';
-  }
+const AI_URL = config.aiServiceUrl || 'http://localhost:5001';
+const API_KEY = config.aiApiKey || 'your-secret-api-key-here';
 
-  /**
-   * Check if the AI service is healthy
-   */
-  async healthCheck() {
-    try {
-      const response = await fetch(`${this.baseURL}/health`);
+class AIService { 
+  async _post(endpoint, imageInput) {
+    const form = new FormData();
 
-      const data = await response.json();
-
-      return {
-        success: response.ok,
-        status: response.status,
-        data
-      };
-    } catch (error) {
-      return {
-        success: false,
-        status: 503,
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Check if the AI service is ready
-   */
-  async readinessCheck() {
-    try {
-      const response = await fetch(`${this.baseURL}/ready`);
-
-      const data = await response.json();
-
-      return {
-        success: response.ok,
-        status: response.status,
-        data
-      };
-    } catch (error) {
-      return {
-        success: false,
-        status: 503,
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Get information about the AI model
-   */
-  async getModelInfo() {
-    try {
-      const response = await fetch(`${this.baseURL}/model-info`);
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail || data.error || 'Failed to get model information'
-        );
-      }
-
-      return data;
-    } catch (error) {
-      throw new Error(`AI model info error: ${error.message}`);
-    }
-  }
-
-  /**
-   * Send an image to the AI service for object detection
-   *
-   * @param {Buffer} imageBuffer - Image data
-   * @param {string} filename - Original filename
-   */
-  async detect(imageBuffer, filename = 'frame.jpg') {
-    try {
-      const formData = new FormData();
-
-      const blob = new Blob([imageBuffer], {
-        type: 'image/jpeg'
-      });
-
-      formData.append('file', blob, filename);
-
-      const response = await fetch(`${this.baseURL}/detect`, {
-        method: 'POST',
-        body: formData
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail || data.error || 'Object detection failed'
-        );
-      }
-
-      return data;
-    } catch (error) {
-      throw new Error(`AI detection error: ${error.message}`);
-    }
-  }
-
-  /**
-   * Send an image to the AI service for object tracking
-   *
-   * @param {Buffer} imageBuffer - Image data
-   * @param {string} filename - Original filename
-   */
-  async track(imageBuffer, filename = 'frame.jpg') {
-    try {
-      const formData = new FormData();
-
-      const blob = new Blob([imageBuffer], {
-        type: 'image/jpeg'
-      });
-
-      formData.append('file', blob, filename);
-
-      const response = await fetch(`${this.baseURL}/track`, {
-        method: 'POST',
-        body: formData
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail || data.error || 'Object tracking failed'
-        );
-      }
-
-      return data;
-    } catch (error) {
-      throw new Error(`AI tracking error: ${error.message}`);
-    }
-  }
-
-  /**
-   * Send an image to the AI service for suspicious activity detection
-   *
-   * @param {Buffer} imageBuffer - Image data
-   * @param {string} filename - Original filename
-   */
-  async detectSuspiciousActivity(
-    imageBuffer,
-    filename = 'frame.jpg'
-  ) {
-    try {
-      const formData = new FormData();
-
-      const blob = new Blob([imageBuffer], {
-        type: 'image/jpeg'
-      });
-
-      formData.append('file', blob, filename);
-
-      const response = await fetch(
-        `${this.baseURL}/detect-suspicious`,
-        {
-          method: 'POST',
-          body: formData
-        }
+    if (typeof imageInput === 'string') {
+      form.append(
+        'file',
+        fs.createReadStream(imageInput)
       );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail ||
-          data.error ||
-          'Suspicious activity detection failed'
-        );
-      }
-
-      return data;
-    } catch (error) {
-      throw new Error(
-        `Suspicious activity detection error: ${error.message}`
-      );
+    } else {
+      form.append('file', imageInput, {
+        filename: 'frame.jpg',
+        contentType: 'image/jpeg',
+      });
     }
+
+    const response = await axios.post(
+      `${AI_URL}${endpoint}`,
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          'X-API-Key': API_KEY,
+        },
+        timeout: 60000,
+        maxBodyLength: Infinity,
+      }
+    );
+
+    return response.data;
   }
 
-  /**
-   * Analyze multiple extracted video frames
-   * @param {string[]} framePaths - Paths to extracted frames
-   * @returns {Promise<object[]>} AI results for each frame
-   */
+  detectObjects(image) {
+    return this._post(
+      '/api/v1/detect',
+      image
+    );
+  }
+
+  trackObjects(image) {
+    return this._post(
+      '/api/v1/track',
+      image
+    );
+  }
+
+  detectSuspiciousActivity(image) {
+    return this._post(
+      '/api/v1/detect-suspicious',
+      image
+    );
+  }
+
   async analyzeFrames(framePaths) {
-    const fs = require('fs');
-    const path = require('path');
-
     const results = [];
 
-    for (let i = 0; i < framePaths.length; i++) {
-      const framePath = framePaths[i];
-
+    for (const framePath of framePaths) {
       try {
-        const imageBuffer = fs.readFileSync(framePath);
-        const filename = path.basename(framePath);
-
-        const result = await this.detectSuspiciousActivity(
-          imageBuffer,
-          filename
+        logger.info(
+          `Analyzing AI frame: ${framePath}`
         );
 
-        results.push({
-          frame: filename,
-          framePath,
-          ...result
-        });
+        const result =
+          await this.detectSuspiciousActivity(
+            framePath
+          );
 
-        // Small delay to avoid overwhelming the AI service
-        await new Promise(resolve => setTimeout(resolve, 50));
+        results.push({
+          ...result,
+          framePath
+        });
 
       } catch (error) {
         logger.error(
-          `AI analysis failed for frame ${framePath}: ${error.message}`
+          `AI frame analysis failed for ${framePath}:`,
+          error.message
         );
 
         results.push({
-          frame: path.basename(framePath),
-          framePath,
           success: false,
+          framePath,
           error: error.message
         });
       }
     }
 
     return results;
+  }
+
+  async healthCheck() {
+    try {
+      const res = await axios.get(
+        `${AI_URL}/api/v1/health`,
+        { timeout: 5000 }
+      );
+
+      return res.data.status === 'healthy';
+
+    } catch (error) {
+      logger.error(
+        'AI health check failed:',
+        error.message
+      );
+
+      return false;
+    }
+  }
+
+  async getModelInfo() {
+    const res = await axios.get(
+      `${AI_URL}/api/v1/model-info`,
+      {
+        headers: {
+          'X-API-Key': API_KEY,
+        },
+      }
+    );
+
+    return res.data;
   }
 }
 

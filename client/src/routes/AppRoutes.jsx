@@ -35,6 +35,8 @@ import CameraList from '../Pages/Cameras/CameraList';
 import AddCamera from '../Pages/Cameras/AddCamera';
 import CameraDetails from '../Pages/Cameras/CameraDetails';
 import RealTimeMonitor from '../Pages/Dashboard/RealTimeMonitor';
+import AIDetectionTest from '../Pages/Dashboard/AIDetectionTest';
+
 
 
 const Placeholder = ({ title }) => (
@@ -79,6 +81,7 @@ const AppRoutes = () => {
           <Route path={ROUTES.REPORT_DETAILS} element={<ReportDetails />} />
           <Route path={ROUTES.PROFILE} element={<Profile />} />
           <Route path={ROUTES.SETTINGS} element={<Settings />} />
+          <Route path="/dashboard/ai-test" element={<AIDetectionTest />} />
           
           {/* Admin only */}
           <Route element={<RoleRoute allowedRoles={[ROLES.ADMIN]} />}>

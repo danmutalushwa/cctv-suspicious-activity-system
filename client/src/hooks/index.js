@@ -12,3 +12,4 @@ export * from './useReports';
 export * from './useUsers';
 export * from './useCameras';
 export * from './useMonitoring';
+export * from './useAI';

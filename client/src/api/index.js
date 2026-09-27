@@ -7,3 +7,4 @@ export { reportsAPI } from './reports';
 export { dashboardAPI } from './dashboard';
 export { default as axios } from './axios';
 export { camerasAPI } from './cameras';
+export { aiAPI } from './ai';

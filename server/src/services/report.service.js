@@ -14,116 +14,371 @@ const Alert = require('../models/Alert');
  */
 const generateIncidentSummaryReport = async (report) => {
   try {
-    const { startDate, endDate, filters, grouping } = report.parameters;
-    
-    // Get incident data
+    const {
+      startDate,
+      endDate,
+      filters = {},
+      grouping = 'day',
+    } = report.parameters;
+
+    /*
+     * ---------------------------------------------------------
+     * Normalize dates
+     * ---------------------------------------------------------
+     *
+     * The frontend already sends ISO dates, but we normalize
+     * them here so the report always covers the complete
+     * selected days.
+     */
+    const reportStartDate = new Date(startDate);
+    const reportEndDate = new Date(endDate);
+
+    if (
+      Number.isNaN(reportStartDate.getTime()) ||
+      Number.isNaN(reportEndDate.getTime())
+    ) {
+      throw new Error('Invalid report date range');
+    }
+
+    // Start of selected start date
+    reportStartDate.setHours(0, 0, 0, 0);
+
+    // End of selected end date
+    reportEndDate.setHours(23, 59, 59, 999);
+
+    logger.info(
+      `Generating incident report ${report._id} from ${reportStartDate.toISOString()} to ${reportEndDate.toISOString()}`
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * Build incident query
+     * ---------------------------------------------------------
+     */
     const matchQuery = {
-      detectedAt: { $gte: startDate, $lte: endDate },
-      isDeleted: false
+      detectedAt: {
+        $gte: reportStartDate,
+        $lte: reportEndDate,
+      },
+      isDeleted: false,
     };
 
-    if (filters?.incidentTypes?.length) {
-      matchQuery.type = { $in: filters.incidentTypes };
+    // Incident type filter
+    if (filters.incidentTypes?.length) {
+      matchQuery.type = {
+        $in: filters.incidentTypes,
+      };
     }
-    if (filters?.severity?.length) {
-      matchQuery.severity = { $in: filters.severity };
+
+    // Severity filter
+    if (filters.severity?.length) {
+      matchQuery.severity = {
+        $in: filters.severity,
+      };
     }
-    if (filters?.status?.length) {
-      matchQuery.status = { $in: filters.status };
+
+    // Status filter
+    if (filters.status?.length) {
+      matchQuery.status = {
+        $in: filters.status,
+      };
     }
-    if (filters?.cameraIds?.length) {
-      matchQuery['location.cameraId'] = { $in: filters.cameraIds };
+
+    // Camera filter
+    if (filters.cameraIds?.length) {
+      matchQuery['location.cameraId'] = {
+        $in: filters.cameraIds,
+      };
     }
-    if (filters?.assignedTo) {
+
+    // Assigned officer filter
+    if (filters.assignedTo) {
       matchQuery.assignedTo = filters.assignedTo;
     }
 
-    // Get statistics
-    const [totalIncidents, byType, bySeverity, byStatus, byDay, incidents] = await Promise.all([
+    logger.info(
+      `Incident report query: ${JSON.stringify(matchQuery)}`
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * Retrieve incidents and statistics
+     * ---------------------------------------------------------
+     */
+    const [
+      totalIncidents,
+      byType,
+      bySeverity,
+      byStatus,
+      byDay,
+      incidents,
+    ] = await Promise.all([
       Incident.countDocuments(matchQuery),
+
       Incident.aggregate([
-        { $match: matchQuery },
-        { $group: { _id: '$type', count: { $sum: 1 } } },
-        { $sort: { count: -1 } }
-      ]),
-      Incident.aggregate([
-        { $match: matchQuery },
-        { $group: { _id: '$severity', count: { $sum: 1 } } },
-        { $sort: { count: -1 } }
-      ]),
-      Incident.aggregate([
-        { $match: matchQuery },
-        { $group: { _id: '$status', count: { $sum: 1 } } },
-        { $sort: { count: -1 } }
-      ]),
-      Incident.aggregate([
-        { $match: matchQuery },
-        { 
-          $group: { 
-            _id: { 
-              $dateToString: { 
-                format: `%Y-%m-%d`, 
-                date: '$detectedAt' 
-              }
-            },
-            count: { $sum: 1 }
-          }
+        {
+          $match: matchQuery,
         },
-        { $sort: { _id: 1 } }
+        {
+          $group: {
+            _id: '$type',
+            count: {
+              $sum: 1,
+            },
+          },
+        },
+        {
+          $sort: {
+            count: -1,
+          },
+        },
       ]),
+
+      Incident.aggregate([
+        {
+          $match: matchQuery,
+        },
+        {
+          $group: {
+            _id: '$severity',
+            count: {
+              $sum: 1,
+            },
+          },
+        },
+        {
+          $sort: {
+            count: -1,
+          },
+        },
+      ]),
+
+      Incident.aggregate([
+        {
+          $match: matchQuery,
+        },
+        {
+          $group: {
+            _id: '$status',
+            count: {
+              $sum: 1,
+            },
+          },
+        },
+        {
+          $sort: {
+            count: -1,
+          },
+        },
+      ]),
+
+      Incident.aggregate([
+        {
+          $match: matchQuery,
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$detectedAt',
+              },
+            },
+            count: {
+              $sum: 1,
+            },
+          },
+        },
+        {
+          $sort: {
+            _id: 1,
+          },
+        },
+      ]),
+
       Incident.find(matchQuery)
         .populate('reportedBy', 'name email')
         .populate('assignedTo', 'name email')
-        .populate('location.cameraId', 'name location')
-        .sort({ detectedAt: -1 })
-        .limit(100)
+        .populate(
+          'location.cameraId',
+          'name location'
+        )
+        .sort({
+          detectedAt: -1,
+        })
+        .limit(100),
     ]);
 
-    // Calculate average resolution time
-    const resolvedIncidents = await Incident.find({
-      ...matchQuery,
-      status: 'resolved',
-      'resolution.resolvedAt': { $exists: true }
-    });
+    /*
+     * ---------------------------------------------------------
+     * Debug information
+     * ---------------------------------------------------------
+     */
+    logger.info(
+      `Incident report ${report._id}: ${totalIncidents} incidents found`
+    );
 
+    logger.info(
+      `Incident report ${report._id}: ${incidents.length} incident documents loaded`
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * Calculate resolved incidents
+     * ---------------------------------------------------------
+     *
+     * Use the already-filtered incident list instead of running
+     * a second database query. This guarantees that the
+     * resolution statistics correspond to the report filters.
+     */
+    const resolvedIncidents = incidents.filter(
+      (incident) =>
+        incident.status === 'resolved' &&
+        incident.resolution?.resolvedAt
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * Calculate average resolution time
+     * ---------------------------------------------------------
+     */
     let avgResolutionTime = 0;
+
     if (resolvedIncidents.length > 0) {
-      const totalTime = resolvedIncidents.reduce((sum, inc) => {
-        const resolvedAt = new Date(inc.resolution.resolvedAt);
-        const detectedAt = new Date(inc.detectedAt);
-        return sum + (resolvedAt - detectedAt);
-      }, 0);
-      avgResolutionTime = totalTime / resolvedIncidents.length / (1000 * 60 * 60); // in hours
+      let totalResolutionTime = 0;
+      let validResolutionCount = 0;
+
+      resolvedIncidents.forEach((incident) => {
+        const detectedAt = new Date(incident.detectedAt);
+        const resolvedAt = new Date(
+          incident.resolution.resolvedAt
+        );
+
+        if (
+          !Number.isNaN(detectedAt.getTime()) &&
+          !Number.isNaN(resolvedAt.getTime()) &&
+          resolvedAt >= detectedAt
+        ) {
+          totalResolutionTime +=
+            resolvedAt.getTime() - detectedAt.getTime();
+
+          validResolutionCount += 1;
+        }
+      });
+
+      if (validResolutionCount > 0) {
+        avgResolutionTime =
+          totalResolutionTime /
+          validResolutionCount /
+          (1000 * 60 * 60);
+      }
     }
 
-    // Prepare report data
+    /*
+     * ---------------------------------------------------------
+     * Determine most common incident type
+     * ---------------------------------------------------------
+     */
+    const mostCommonType =
+      byType.length > 0
+        ? byType[0]._id
+        : 'N/A';
+
+    /*
+     * ---------------------------------------------------------
+     * Determine MOST SEVERE incident
+     * ---------------------------------------------------------
+     *
+     * This is intentionally NOT based on frequency.
+     *
+     * Example:
+     *   low      = 10
+     *   medium   = 5
+     *   critical = 1
+     *
+     * The result should be "critical", not "low".
+     */
+    const severityRank = {
+      low: 1,
+      medium: 2,
+      high: 3,
+      critical: 4,
+    };
+
+    let mostSevereIncident = 'N/A';
+
+    if (bySeverity.length > 0) {
+      const sortedSeverity = [...bySeverity].sort(
+        (a, b) =>
+          (severityRank[b._id] || 0) -
+          (severityRank[a._id] || 0)
+      );
+
+      mostSevereIncident =
+        sortedSeverity[0]?._id || 'N/A';
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * Build report data
+     * ---------------------------------------------------------
+     */
     const reportData = {
       title: report.title,
+
       description: report.description,
+
       generatedAt: new Date(),
+
       dateRange: {
-        start: startDate,
-        end: endDate
+        start: reportStartDate,
+        end: reportEndDate,
       },
+
       summary: {
         totalIncidents,
+
         totalResolved: resolvedIncidents.length,
-        averageResolutionTime: avgResolutionTime.toFixed(2),
-        mostCommonType: byType[0]?._id || 'N/A',
-        mostSevereIncident: bySeverity[0]?._id || 'N/A'
+
+        averageResolutionTime:
+          Number(avgResolutionTime.toFixed(2)),
+
+        mostCommonType,
+
+        mostSevereIncident,
       },
+
       statistics: {
         byType,
         bySeverity,
         byStatus,
-        byDay
+        byDay,
       },
-      incidents: incidents
+
+      incidents,
     };
+
+    /*
+     * ---------------------------------------------------------
+     * Final diagnostic log
+     * ---------------------------------------------------------
+     */
+    logger.info(
+      `Report ${report._id} summary: ` +
+      `total=${totalIncidents}, ` +
+      `resolved=${resolvedIncidents.length}, ` +
+      `avgResolution=${avgResolutionTime.toFixed(2)}h, ` +
+      `commonType=${mostCommonType}, ` +
+      `mostSevere=${mostSevereIncident}`
+    );
 
     return reportData;
   } catch (error) {
-    logger.error('Generate incident summary error:', error);
+    logger.error(
+      'Generate incident summary error:',
+      error
+    );
+
     throw error;
   }
 };

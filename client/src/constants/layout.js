@@ -8,6 +8,7 @@ import {
   User,
   Activity,
   Shield,
+  Brain,
 } from 'lucide-react';
 import { ROUTES } from './routes';
 import { ROLES } from './roles';
@@ -56,6 +57,12 @@ export const SIDEBAR_ITEMS = [
     path: ROUTES.REPORTS,
     roles: [ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER],
   },
+  {
+  label: 'AI Test',
+  icon: Brain,  // import from lucide-react
+  path: '/dashboard/ai-test',
+  roles: [ROLES.ADMIN, ROLES.OPERATOR],
+},
   {
     label: 'Users',
     icon: Users,

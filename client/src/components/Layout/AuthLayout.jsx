@@ -18,6 +18,7 @@ const AuthLayout = () => {
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-secondary-50 dark:bg-secondary-900">
       {/* Left side - Branding */}
+      {/*<div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-red-700 via-red-800 to-red-950 text-white p-12 flex-col justify-between relative overflow-hidden"></div> */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-primary-600 via-primary-700 to-primary-900 text-white p-12 flex-col justify-between relative overflow-hidden">
         {/* Background pattern */}
         <div className="absolute inset-0 opacity-10">

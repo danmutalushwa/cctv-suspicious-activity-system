@@ -7,111 +7,258 @@ const path = require('path');
 
 const config = require('./config/env');
 const logger = require('./utils/logger');
-const ApiResponse = require('./utils/response');
-const { HTTP_STATUS } = require('./config/constants');
 
+// Routes
 const authRoutes = require('./routes/auth.routes');
+const userRoutes = require('./routes/user.routes');
+const cameraRoutes = require('./routes/camera.routes');
 const incidentRoutes = require('./routes/incident.routes');
 const alertRoutes = require('./routes/alert.routes');
-const testRoutes = require('./routes/test.routes');
 const videoRoutes = require('./routes/video.routes');
+const aiRoutes = require('./routes/ai.routes');
 const reportRoutes = require('./routes/report.routes');
 const dashboardRoutes = require('./routes/dashboard.routes');
-const userRoutes = require('./routes/user.routes'); 
-const cameraRoutes = require('./routes/camera.routes');
+
+// Utils
+const ApiResponse = require('./utils/response');
 
 const app = express();
 
-// Middleware
-app.use(helmet());
+/*
+|--------------------------------------------------------------------------
+| Security
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+  helmet({
+    crossOriginResourcePolicy: {
+      policy: 'cross-origin',
+    },
+  })
+);
+
+/*
+|--------------------------------------------------------------------------
+| CORS
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+  cors({
+    origin: config.clientUrl,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-API-Key',
+    ],
+  })
+);
+
+/*
+|--------------------------------------------------------------------------
+| Compression
+|--------------------------------------------------------------------------
+*/
+
 app.use(compression());
 
-app.use(cors({
-  origin: config.clientUrl,
-  credentials: true
-}));
+/*
+|--------------------------------------------------------------------------
+| Body Parsers
+|--------------------------------------------------------------------------
+*/
 
-// Body parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(
+  express.json({
+    limit: '10mb',
+  })
+);
 
-// Static files
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: '10mb',
+  })
+);
 
-// Logging
-if (config.nodeEnv === 'development') {
-  app.use(morgan('dev'));
-} else {
-  app.use(morgan('combined', { stream: logger.stream }));
+/*
+|--------------------------------------------------------------------------
+| HTTP Logger
+|--------------------------------------------------------------------------
+*/
+
+if (config.nodeEnv !== 'test') {
+  app.use(
+    morgan('dev', {
+      stream: {
+        write: (message) => {
+          logger.info(message.trim());
+        },
+      },
+    })
+  );
 }
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  ApiResponse.success(res, {
-    status: 'OK',
-    environment: config.nodeEnv,
-    timestamp: new Date().toISOString()
-  }, 'Server is healthy');
+/*
+|--------------------------------------------------------------------------
+| Static Files
+|--------------------------------------------------------------------------
+|
+| Files physically stored in:
+|
+| server/uploads/
+|
+| become accessible through:
+|
+| http://localhost:5000/uploads/...
+|
+*/
+
+app.use(
+  '/uploads',
+  express.static(
+    path.join(__dirname, '../uploads'),
+    {
+      setHeaders: (res) => {
+        res.setHeader(
+          'Access-Control-Allow-Origin',
+          config.clientUrl
+        );
+
+        res.setHeader(
+          'Access-Control-Allow-Credentials',
+          'true'
+        );
+
+        res.setHeader(
+          'Cross-Origin-Resource-Policy',
+          'cross-origin'
+        );
+      },
+    }
+  )
+);
+
+/*
+|--------------------------------------------------------------------------
+| Health Check
+|--------------------------------------------------------------------------
+*/
+
+app.get('/api/health', async (req, res) => {
+  try {
+    return ApiResponse.success(
+      res,
+      {
+        status: 'healthy',
+        service: 'CCTV Suspicious Activity Detection API',
+        environment: config.nodeEnv,
+        timestamp: new Date().toISOString(),
+      },
+      'API is healthy'
+    );
+  } catch (error) {
+    logger.error(
+      'Health check error:',
+      error
+    );
+
+    return ApiResponse.error(
+      res,
+      error,
+      'Health check failed'
+    );
+  }
 });
 
-// Welcome route
-app.get('/', (req, res) => {
-  ApiResponse.success(res, {
-    name: 'Intelligent CCTV Suspicious Activity Detection System API',
-    version: '1.0.0',
-    environment: config.nodeEnv,
-    endpoints: {
-      health: '/api/health',
-      test: '/api/test',
-      auth: '/api/auth'
-    },
-    documentation: '/api/docs'
-  }, 'Welcome to the API');
-});
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+*/
 
-// Test route
-app.get('/api/test', (req, res) => {
-  ApiResponse.success(res, {
-    message: 'API is working!',
-    timestamp: new Date().toISOString()
-  }, 'Test successful');
-});
+app.use(
+  '/api/auth',
+  authRoutes
+);
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/incidents', incidentRoutes);
-app.use('/api/alerts', alertRoutes);
-app.use('/api/test', testRoutes);
-app.use('/api/videos', videoRoutes);
-app.use('/api/reports', reportRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/users', userRoutes); 
-app.use('/api/cameras', cameraRoutes);
+app.use(
+  '/api/users',
+  userRoutes
+);
 
-// 404 handler
+app.use(
+  '/api/cameras',
+  cameraRoutes
+);
+
+app.use(
+  '/api/incidents',
+  incidentRoutes
+);
+
+app.use(
+  '/api/alerts',
+  alertRoutes
+);
+
+app.use(
+  '/api/videos',
+  videoRoutes
+);
+
+app.use(
+  '/api/ai',
+  aiRoutes
+);
+
+app.use(
+  '/api/reports',
+  reportRoutes
+);
+
+app.use(
+  '/api/dashboard',
+  dashboardRoutes
+);
+
+/*
+|--------------------------------------------------------------------------
+| 404 Handler
+|--------------------------------------------------------------------------
+*/
+
 app.use((req, res) => {
-  ApiResponse.notFound(res, `Route ${req.originalUrl} not found`);
+  return ApiResponse.notFound(
+    res,
+    `Route ${req.originalUrl} not found`
+  );
 });
 
-// Global error handler
+/*
+|--------------------------------------------------------------------------
+| Global Error Handler
+|--------------------------------------------------------------------------
+*/
+
 app.use((err, req, res, next) => {
-  logger.error('Global error handler:', {
-    message: err.message,
-    stack: err.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip
-  });
+  logger.error(
+    'Unhandled application error:',
+    err
+  );
 
-  const statusCode = err.statusCode || HTTP_STATUS.INTERNAL_SERVER_ERROR;
-  const message = err.message || 'Internal server error';
+  if (res.headersSent) {
+    return next(err);
+  }
 
-  res.status(statusCode).json({
-    success: false,
-    message,
-    error: config.nodeEnv === 'development' ? err.stack : undefined,
-    timestamp: new Date().toISOString()
-  });
+  return ApiResponse.error(
+    res,
+    err,
+    'Internal server error'
+  );
 });
 
 module.exports = app;

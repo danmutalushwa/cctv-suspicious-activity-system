@@ -10,6 +10,7 @@ export const ROUTES = {
   REAL_TIME: '/dashboard/realtime',
   TIMELINE: '/dashboard/timeline',
   SYSTEM_HEALTH: '/dashboard/health',
+  AI_TEST: '/dashboard/ai-test',
 
   // Incidents
   INCIDENTS: '/incidents',

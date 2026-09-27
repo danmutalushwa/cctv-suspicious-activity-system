@@ -30,16 +30,22 @@ const createAlert = async (req, res) => {
       }
     }
 
-    // If no recipients specified, send to all admins
+   // If no recipients are specified, send to all active
+    // administrators and operators.
     if (!alertData.recipients || alertData.recipients.length === 0) {
-      const admins = await User.find({ 
-        role: 'admin', 
-        isActive: true 
-      });
-      alertData.recipients = admins.map(a => ({
-        userId: a._id,
+      const users = await User.find({
+        role: { $in: ['admin', 'operator'] },
+        isActive: true
+      }).select('_id role name email');
+
+      alertData.recipients = users.map(user => ({
+        userId: user._id,
         status: 'pending'
       }));
+
+      logger.info(
+        `Alert recipients assigned: ${users.length} active admin/operator users`
+      );
     }
     
     const alert = await Alert.create(alertData);

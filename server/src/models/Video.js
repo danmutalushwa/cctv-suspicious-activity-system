@@ -73,6 +73,68 @@ const videoSchema = new mongoose.Schema({
   processingError: {
     type: String
   },
+  aiAnalysis: {
+    status: {
+      type: String,
+      enum: ['not_started', 'processing', 'completed', 'failed'],
+      default: 'not_started'
+    },
+
+    frameCount: {
+      type: Number,
+      default: 0
+    },
+
+    analyzedFrames: {
+      type: Number,
+      default: 0
+    },
+
+    suspiciousFrames: {
+      type: Number,
+      default: 0
+    },
+
+    incidentsCreated: {
+      type: Number,
+      default: 0
+    },
+
+    overallSeverity: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'critical'],
+      default: 'low'
+    },
+
+    activities: [{
+      type: String
+    }],
+
+    detections: [{
+      frame: String,
+      activities: [String],
+      severity: {
+        type: String,
+        enum: ['low', 'medium', 'high', 'critical']
+      },
+      confidence: Number,
+      trackId: mongoose.Schema.Types.Mixed,
+      bbox: [Number],
+      zone: String
+    }],
+
+    model: {
+      type: String
+    },
+
+    processedAt: {
+      type: Date
+    },
+
+    error: {
+      type: String
+    }
+  },
   metadata: {
     recordedAt: Date,
     location: {

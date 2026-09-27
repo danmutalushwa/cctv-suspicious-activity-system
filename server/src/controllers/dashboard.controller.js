@@ -25,15 +25,6 @@ const getDashboardStats = async (req, res) => {
     // Base filter for incidents
     const baseFilter = { isDeleted: false };
     
-    // If not admin, only show incidents from their cameras or assigned to them
-    if (userRole !== 'admin') {
-      // This will be expanded when we add camera assignments
-      baseFilter.$or = [
-        { reportedBy: userId },
-        { assignedTo: userId }
-      ];
-    }
-
     // Get statistics in parallel
     const [
       totalIncidents,

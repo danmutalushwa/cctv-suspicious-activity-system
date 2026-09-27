@@ -30,7 +30,8 @@ const activityLogSchema = new mongoose.Schema({
       'UPDATE_CAMERA',
       'DELETE_CAMERA',
       'START_STREAM',
-      'STOP_STREAM'
+      'STOP_STREAM',
+      'AI_DETECTION',
     ]
   },
   resource: {

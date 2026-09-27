@@ -37,9 +37,9 @@ const UserList = () => {
   const { data, isLoading, isError, error } = useUsers(queryParams);
 
   const users = data?.data?.users || [];
-  const totalItems = data?.data?.pagination?.total || 0;
+  const totalItems = data?.data?.pagination?.totalItems || 0;
 
-  if (data?.data?.pagination?.total !== undefined && pagination.total !== totalItems) {
+  if (data?.data?.pagination?.totalItems !== undefined && pagination.total !== totalItems) {
     pagination.setTotal(totalItems);
   }
 

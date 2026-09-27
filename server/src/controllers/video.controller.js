@@ -288,6 +288,10 @@ const processVideoAsync = async (
     // 5. AI analysis
     let aiResults = [];
 
+    await Video.findByIdAndUpdate(videoId, {
+      'aiAnalysis.status': 'processing'
+    });
+
     if (framePaths.length > 0) {
       logger.info(
         `Starting AI analysis for ${framePaths.length} frames`
@@ -319,6 +323,62 @@ const processVideoAsync = async (
           ) &&
           result.suspicious_activities.length > 0
       );
+      // Build AI analysis summary
+      const allActivities = [];
+
+      const detectionResults = [];
+
+      suspiciousResults.forEach((result, index) => {
+        const framePath = framePaths[index];
+
+        result.suspicious_activities.forEach(activity => {
+          if (Array.isArray(activity.activities)) {
+            allActivities.push(...activity.activities);
+          }
+
+          detectionResults.push({
+            frame: framePath
+              ? path.basename(framePath)
+              : `frame-${index + 1}`,
+
+            activities: activity.activities || [],
+
+            severity: activity.severity || 'low',
+
+            confidence: activity.confidence || 0,
+
+            trackId: activity.track_id ?? null,
+
+            bbox: activity.bbox || [],
+
+            zone: activity.zone || null
+          });
+        });
+      });
+
+      const uniqueActivities = [
+        ...new Set(allActivities)
+      ];
+
+      const severityRank = {
+        low: 0,
+        medium: 1,
+        high: 2,
+        critical: 3
+      };
+
+      let overallSeverity = 'low';
+
+      for (const result of suspiciousResults) {
+        const severity = result.overall_severity || 'low';
+
+        if (
+          severityRank[severity] >
+          severityRank[overallSeverity]
+        ) {
+          overallSeverity = severity;
+        }
+      }
 
     // 7. Create incidents
     let createdIncidents = [];
@@ -373,39 +433,53 @@ const processVideoAsync = async (
     }
 
     // 9. Update video
-    await Video.findByIdAndUpdate(
+   await Video.findByIdAndUpdate(
       videoId,
       {
         status: 'completed',
 
-        duration:
-          metadata.duration,
+        duration: metadata.duration,
 
-        resolution:
-          metadata.video
-            ? {
-                width:
-                  metadata.video.width,
+        resolution: metadata.video
+          ? {
+              width: metadata.video.width,
+              height: metadata.video.height
+            }
+          : null,
 
-                height:
-                  metadata.video.height
-              }
-            : null,
+        framerate: metadata.video?.framerate,
 
-        framerate:
-          metadata.video?.framerate,
+        bitrate: metadata.bitrate,
 
-        bitrate:
-          metadata.bitrate,
+        codec: metadata.video?.codec,
 
-        codec:
-          metadata.video?.codec,
+        thumbnailPath: thumbnailPath,
 
-        thumbnailPath:
-          thumbnailPath
+        aiAnalysis: {
+          status: 'completed',
+
+          frameCount: framePaths.length,
+
+          analyzedFrames: aiResults.length,
+
+          suspiciousFrames:
+            suspiciousResults.length,
+
+          incidentsCreated:
+            createdIncidents.length,
+
+          overallSeverity,
+
+          activities: uniqueActivities,
+
+          detections: detectionResults,
+
+          model: 'yolov8n',
+
+          processedAt: new Date()
+        }
       }
     );
-
     logger.info(
       `Video processed successfully: ${video.filename}`
     );
@@ -433,8 +507,10 @@ const processVideoAsync = async (
         videoId,
         {
           status: 'failed',
-          processingError:
-            error.message
+          processingError: error.message,
+          'aiAnalysis.status': 'failed',
+          'aiAnalysis.error': error.message,
+          'aiAnalysis.processedAt': new Date()
         }
       );
     } catch (updateError) {

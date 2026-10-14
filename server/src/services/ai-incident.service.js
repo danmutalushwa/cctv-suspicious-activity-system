@@ -1,27 +1,26 @@
 const Incident = require('../models/Incident');
+const Alert = require('../models/Alert');
+
 const logger = require('../utils/logger');
+
 const {
   INCIDENT_TYPES,
   INCIDENT_STATUS,
   SEVERITY
 } = require('../config/constants');
 
-/**
- * Convert AI activity names to valid Incident types.
- *
- * The AI currently detects:
- * - intrusion
- * - loitering
- * - rapid_movement
- * - unusual_behavior
- *
- * We only map activities that are currently supported
- * by the Python AI service.
- */
+
+// ============================================================
+// MAP INCIDENT TYPE
+// ============================================================
+
 const normalizeIncidentType = (activity) => {
   const activityMap = {
-    intrusion: INCIDENT_TYPES.INTRUSION,
-    loitering: INCIDENT_TYPES.LOITERING,
+    intrusion:
+      INCIDENT_TYPES.INTRUSION,
+
+    loitering:
+      INCIDENT_TYPES.LOITERING,
 
     rapid_movement:
       INCIDENT_TYPES.SUSPICIOUS_BEHAVIOR,
@@ -36,9 +35,11 @@ const normalizeIncidentType = (activity) => {
   );
 };
 
-/**
- * Normalize AI severity to the Incident severity enum.
- */
+
+// ============================================================
+// MAP SEVERITY
+// ============================================================
+
 const normalizeSeverity = (severity) => {
   const validSeverities = [
     SEVERITY.LOW,
@@ -47,16 +48,20 @@ const normalizeSeverity = (severity) => {
     SEVERITY.CRITICAL
   ];
 
-  if (validSeverities.includes(severity)) {
+  if (
+    validSeverities.includes(severity)
+  ) {
     return severity;
   }
 
   return SEVERITY.LOW;
 };
 
-/**
- * Create an Incident from one suspicious AI detection.
- */
+
+// ============================================================
+// CREATE INCIDENT + ALERT
+// ============================================================
+
 const createIncidentFromDetection = async ({
   detection,
   video,
@@ -75,23 +80,16 @@ const createIncidentFromDetection = async ({
       );
     }
 
-    /*
-     * The AI activity object normally contains:
-     *
-     * {
-     *   activities: ['intrusion'],
-     *   severity: 'high',
-     *   zone: 'zone_1',
-     *   confidence: 0.87
-     * }
-     */
-
     const activities =
-      Array.isArray(detection.activities)
+      Array.isArray(
+        detection.activities
+      )
         ? detection.activities
         : [];
 
-    if (activities.length === 0) {
+    if (
+      activities.length === 0
+    ) {
       logger.warn(
         'AI detection contains no activities'
       );
@@ -99,8 +97,6 @@ const createIncidentFromDetection = async ({
       return null;
     }
 
-    // Use the first detected activity as the
-    // primary incident type.
     const primaryActivity =
       activities[0];
 
@@ -115,97 +111,241 @@ const createIncidentFromDetection = async ({
       );
 
     const confidence =
-      Number(detection.confidence) || 0;
+      Number(
+        detection.confidence
+      ) || 0;
 
-    /*
-     * Create the incident.
-     */
-    const incident = await Incident.create({
-      title: `AI Detected ${primaryActivity.replace(
+    const reason =
+      detection.reason ||
+      `AI detected ${primaryActivity.replace(
         /_/g,
         ' '
-      )}`,
+      )}`;
 
-      description:
-        `Suspicious activity detected automatically by the AI system in video "${video.originalName}".`,
+    // ========================================================
+    // CREATE INCIDENT
+    // ========================================================
 
-      type: incidentType,
+    const incident =
+      await Incident.create({
+        title:
+          `AI Detected ${primaryActivity.replace(
+            /_/g,
+            ' '
+          )}`,
 
-      status:
-        INCIDENT_STATUS.PENDING,
+        description:
+          `Suspicious activity detected automatically by the AI system. Reason: ${reason}. Video: "${video.originalName}".`,
 
-      severity,
-
-      reportedBy:
-        video.uploadedBy,
-
-      cameraId:
-        video.cameraId || undefined,
-
-      detectedAt:
-        new Date(),
-
-      confidence,
-
-      boundingBox:
-        detection.bbox
-          ? {
-              x: detection.bbox[0] || 0,
-              y: detection.bbox[1] || 0,
-              width:
-                (detection.bbox[2] || 0) -
-                (detection.bbox[0] || 0),
-              height:
-                (detection.bbox[3] || 0) -
-                (detection.bbox[1] || 0)
-            }
-          : undefined,
-
-      aiAnalysis: {
-        predictedType:
+        type:
           incidentType,
+
+        status:
+          INCIDENT_STATUS.PENDING,
+
+        severity,
+
+        reportedBy:
+          video.uploadedBy,
+
+        cameraId:
+          video.cameraId ||
+          undefined,
+
+        detectedAt:
+          new Date(),
 
         confidence,
 
-        features: {
-          activities,
-          zone:
-            detection.zone || null,
+        boundingBox:
+          Array.isArray(
+            detection.bbox
+          ) &&
+          detection.bbox.length >= 4
+            ? {
+                x:
+                  Number(
+                    detection.bbox[0]
+                  ) || 0,
 
-          frame:
-            frame || null,
+                y:
+                  Number(
+                    detection.bbox[1]
+                  ) || 0,
 
-          trackId:
-            detection.track_id || null
+                width:
+                  (
+                    Number(
+                      detection.bbox[2]
+                    ) || 0
+                  ) -
+                  (
+                    Number(
+                      detection.bbox[0]
+                    ) || 0
+                  ),
+
+                height:
+                  (
+                    Number(
+                      detection.bbox[3]
+                    ) || 0
+                  ) -
+                  (
+                    Number(
+                      detection.bbox[1]
+                    ) || 0
+                  )
+              }
+            : undefined,
+
+        aiAnalysis: {
+          predictedType:
+            incidentType,
+
+          confidence,
+
+          features: {
+            activities,
+
+            reason,
+
+            zone:
+              detection.zone ||
+              null,
+
+            frame:
+              frame ||
+              null,
+
+            trackId:
+              detection.track_id ??
+              null
+          },
+
+          modelVersion:
+            'YOLOv8 + DeepSORT',
+
+          processedAt:
+            new Date()
         },
 
-        modelVersion:
-          'YOLOv8 + DeepSORT',
+        metadata: {
+          source:
+            'ai',
 
-        processedAt:
-          new Date()
-      },
+          videoId:
+            video._id,
 
-      metadata: {
-        source: 'ai',
-        videoId: video._id,
-        frame: frame || null
-      }
-    });
+          frame:
+            frame ||
+            null,
 
-    /*
-     * Link the incident back to the video.
-     */
+          reason
+        }
+      });
+
+    // ========================================================
+    // LINK INCIDENT TO VIDEO
+    // ========================================================
+
     if (!video.incidentId) {
-      video.incidentId = incident._id;
+      video.incidentId =
+        incident._id;
+
       await video.save();
     }
 
+    // ========================================================
+    // CREATE ALERT
+    // ========================================================
+
+    const alert =
+      await Alert.create({
+        title:
+          `[AI] ${incident.title}`,
+
+        message:
+          `${reason}. Severity: ${severity}.`,
+
+        priority:
+          severity,
+
+        type:
+          'in_app',
+
+        incidentId:
+          incident._id,
+
+        cameraId:
+          video.cameraId ||
+          undefined,
+
+        recipients:
+          video.uploadedBy
+            ? [
+                {
+                  userId:
+                    video.uploadedBy,
+
+                  status:
+                    'pending'
+                }
+              ]
+            : [],
+
+        channels: [
+          'in_app',
+          'socket'
+        ],
+
+        metadata: {
+          source:
+            'ai',
+
+          videoId:
+            video._id,
+
+          severity,
+
+          activities,
+
+          reason,
+
+          frame:
+            frame ||
+            null,
+
+          timestamp:
+            new Date()
+        }
+      });
+
+    // ========================================================
+    // LOG
+    // ========================================================
+
     logger.info(
-      `AI incident created: ${incident.incidentNumber} | ${incidentType} | ${severity}`
+      `AI incident created: ${incident.incidentNumber}`
     );
 
-    return incident;
+    logger.info(
+      `AI alert created: ${alert._id}`
+    );
+
+    logger.info(
+      `AI reason: ${reason}`
+    );
+
+    // ========================================================
+    // RETURN BOTH
+    // ========================================================
+
+    return {
+      incident,
+      alert
+    };
+
   } catch (error) {
     logger.error(
       `Failed to create AI incident: ${error.message}`
@@ -215,24 +355,53 @@ const createIncidentFromDetection = async ({
   }
 };
 
-/**
- * Process all suspicious AI results for a video.
- */
+
+// ============================================================
+// PROCESS AI RESULTS
+// ============================================================
+
 const processAIResults = async ({
   aiResults,
   video
 }) => {
-  const incidents = [];
+  const results = [];
 
-  if (!Array.isArray(aiResults)) {
+  if (
+    !Array.isArray(aiResults)
+  ) {
     logger.warn(
       'AI results are not an array'
     );
 
-    return incidents;
+    return results;
   }
 
-  for (const result of aiResults) {
+  if (!video) {
+    logger.warn(
+      'No video provided for AI incident processing'
+    );
+
+    return results;
+  }
+
+  /**
+   * ----------------------------------------------------------
+   * Prevent duplicate incidents
+   * ----------------------------------------------------------
+   *
+   * A suspicious person can appear in many consecutive
+   * frames. We do not want 100 identical incidents for
+   * the same track/activity.
+   *
+   * Key:
+   * activity + track ID + video
+   */
+  const processedDetections =
+    new Set();
+
+  for (
+    const result of aiResults
+  ) {
     try {
       if (
         !result ||
@@ -249,39 +418,112 @@ const processAIResults = async ({
           ? result.suspicious_activities
           : [];
 
-      /*
-       * Each frame can contain multiple
-       * suspicious detections.
+      /**
+       * IMPORTANT:
+       *
+       * aiService.analyzeFrames()
+       * adds framePath to every result.
+       *
+       * Therefore we use:
+       *
+       * result.framePath
+       *
+       * rather than result.frame.
        */
+      const frame =
+        result.framePath ||
+        result.frame ||
+        null;
+
       for (
-        const detection of suspiciousActivities
+        const detection
+        of suspiciousActivities
       ) {
-        const incident =
+        const activities =
+          Array.isArray(
+            detection.activities
+          )
+            ? detection.activities
+            : [];
+
+        if (
+          activities.length === 0
+        ) {
+          continue;
+        }
+
+        const trackId =
+          detection.track_id ??
+          'unknown';
+
+        /**
+         * Create a key for the same activity
+         * being detected on the same tracked
+         * person in this video.
+         */
+        const detectionKey =
+          `${video._id}:` +
+          `${trackId}:` +
+          `${activities.sort().join(',')}`;
+
+        if (
+          processedDetections.has(
+            detectionKey
+          )
+        ) {
+          logger.info(
+            `Skipping duplicate AI detection: ${detectionKey}`
+          );
+
+          continue;
+        }
+
+        processedDetections.add(
+          detectionKey
+        );
+
+        // ----------------------------------------------------
+        // Create Incident + Alert
+        // ----------------------------------------------------
+
+        const created =
           await createIncidentFromDetection({
             detection,
+
             video,
-            frame: result.frame
+
+            frame
           });
 
-        if (incident) {
-          incidents.push(incident);
+        if (created) {
+          results.push(
+            created
+          );
         }
       }
+
     } catch (error) {
       logger.error(
         `Failed to process AI result for frame ${
-          result.frame || 'unknown'
+          result?.framePath ||
+          result?.frame ||
+          'unknown'
         }: ${error.message}`
       );
     }
   }
 
   logger.info(
-    `AI incident processing completed: ${incidents.length} incidents created`
+    `AI incident processing completed: ${results.length} incident/alert pair(s) created`
   );
 
-  return incidents;
+  return results;
 };
+
+
+// ============================================================
+// EXPORTS
+// ============================================================
 
 module.exports = {
   normalizeIncidentType,

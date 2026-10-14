@@ -2,6 +2,7 @@ const Video = require('../models/Video');
 const Incident = require('../models/Incident');
 const ApiResponse = require('../utils/response');
 const logger = require('../utils/logger');
+
 const videoService = require('../services/video.service');
 const aiService = require('../services/ai.service');
 const aiIncidentService = require('../services/ai-incident.service');
@@ -13,14 +14,6 @@ const path = require('path');
  * ---------------------------------------------------------
  * Helper: Convert a server filesystem path into a browser URL
  * ---------------------------------------------------------
- *
- * Example:
- *
- * Windows path:
- * E:\cctv-suspicious-activity-system\server\uploads\videos\abc-thumb.jpg
- *
- * Browser URL:
- * http://localhost:5000/uploads/videos/abc-thumb.jpg
  */
 const getUploadUrl = (req, filePath) => {
   if (!filePath) {
@@ -136,9 +129,7 @@ const uploadVideo = async (req, res) => {
     // Incident reference
     if (incidentId) {
       const incident =
-        await Incident.findById(
-          incidentId
-        );
+        await Incident.findById(incidentId);
 
       if (incident) {
         videoData.incidentId =
@@ -157,12 +148,21 @@ const uploadVideo = async (req, res) => {
 
     /**
      * Start processing in background.
+     *
+     * IMPORTANT:
+     * Catch rejected promises so an AI/video-processing
+     * failure does not become an unhandled promise rejection.
      */
     processVideoAsync(
       video._id,
       req.file.path,
       video
-    );
+    ).catch(error => {
+      logger.error(
+        `Background video processing failed for ${video.filename}:`,
+        error
+      );
+    });
 
     logger.info(
       `Video uploaded: ${video.filename} by ${req.user.email}`
@@ -217,7 +217,9 @@ const processVideoAsync = async (
       `Starting video processing: ${video.filename}`
     );
 
+    // -----------------------------------------------------
     // 1. Extract metadata
+    // -----------------------------------------------------
     const metadata =
       await videoService.extractVideoMetadata(
         filePath
@@ -227,7 +229,9 @@ const processVideoAsync = async (
       `Video metadata extracted: ${video.filename}`
     );
 
+    // -----------------------------------------------------
     // 2. Generate thumbnail
+    // -----------------------------------------------------
     const uploadDir =
       path.dirname(filePath);
 
@@ -256,7 +260,9 @@ const processVideoAsync = async (
       `Video thumbnail generated: ${thumbnailPath}`
     );
 
-    // 3. Create temporary AI frame directory
+    // -----------------------------------------------------
+    // 3. Create AI frame directory
+    // -----------------------------------------------------
     frameDir = path.join(
       uploadDir,
       `${path.basename(
@@ -265,7 +271,9 @@ const processVideoAsync = async (
       )}-ai-frames`
     );
 
+    // -----------------------------------------------------
     // 4. Extract frames
+    // -----------------------------------------------------
     logger.info(
       `Extracting frames for AI analysis: ${video.filename}`
     );
@@ -275,8 +283,13 @@ const processVideoAsync = async (
         filePath,
         frameDir,
         {
-          interval: 2,
+          // Frequent sampling for DeepSORT/activity detection
+          interval: 0.2,
+
+          // Safety limit
           maxFrames: 300,
+
+          // Must match the AI activity zone configuration
           imageSize: '640x360'
         }
       );
@@ -285,12 +298,20 @@ const processVideoAsync = async (
       `Extracted ${framePaths.length} AI frames from ${video.filename}`
     );
 
-    // 5. AI analysis
-    let aiResults = [];
+    // -----------------------------------------------------
+    // 5. Mark AI analysis as processing
+    // -----------------------------------------------------
+    await Video.findByIdAndUpdate(
+      videoId,
+      {
+        'aiAnalysis.status': 'processing'
+      }
+    );
 
-    await Video.findByIdAndUpdate(videoId, {
-      'aiAnalysis.status': 'processing'
-    });
+    // -----------------------------------------------------
+    // 6. Analyze frames with Python AI service
+    // -----------------------------------------------------
+    let aiResults = [];
 
     if (framePaths.length > 0) {
       logger.info(
@@ -311,9 +332,38 @@ const processVideoAsync = async (
       );
     }
 
-    // 6. Find suspicious results
+    // -----------------------------------------------------
+    // 7. Attach original frame path to every AI result
+    // -----------------------------------------------------
+    /**
+     * IMPORTANT:
+     *
+     * Do NOT use:
+     *
+     * suspiciousResults.forEach((result, index) => {
+     *   framePaths[index]
+     * })
+     *
+     * because suspiciousResults is filtered from aiResults.
+     *
+     * Instead, aiService.analyzeFrames() already adds
+     * framePath to each result.
+     */
+    const normalizedAIResults =
+      aiResults.map((result, index) => ({
+        ...result,
+
+        framePath:
+          result?.framePath ||
+          framePaths[index] ||
+          null
+      }));
+
+    // -----------------------------------------------------
+    // 8. Find suspicious AI results
+    // -----------------------------------------------------
     const suspiciousResults =
-      aiResults.filter(
+      normalizedAIResults.filter(
         result =>
           result &&
           result.success &&
@@ -323,70 +373,120 @@ const processVideoAsync = async (
           ) &&
           result.suspicious_activities.length > 0
       );
-      // Build AI analysis summary
-      const allActivities = [];
 
-      const detectionResults = [];
+    logger.info(
+      `AI detected ${suspiciousResults.length} suspicious frames for ${video.filename}`
+    );
 
-      suspiciousResults.forEach((result, index) => {
-        const framePath = framePaths[index];
+    // -----------------------------------------------------
+    // 9. Build AI analysis summary
+    // -----------------------------------------------------
+    const allActivities = [];
 
-        result.suspicious_activities.forEach(activity => {
-          if (Array.isArray(activity.activities)) {
-            allActivities.push(...activity.activities);
+    const detectionResults = [];
+
+    suspiciousResults.forEach(
+      (result, resultIndex) => {
+        const framePath =
+          result.framePath || null;
+
+        const frameName =
+          framePath
+            ? path.basename(framePath)
+            : `frame-${resultIndex + 1}`;
+
+        result.suspicious_activities.forEach(
+          activity => {
+            if (
+              Array.isArray(
+                activity.activities
+              )
+            ) {
+              allActivities.push(
+                ...activity.activities
+              );
+            }
+
+            detectionResults.push({
+              frame:
+                frameName,
+
+              framePath:
+                framePath,
+
+              activities:
+                activity.activities || [],
+
+              severity:
+                activity.severity ||
+                'low',
+
+              confidence:
+                activity.confidence ||
+                0,
+
+              trackId:
+                activity.track_id ??
+                null,
+
+              bbox:
+                activity.bbox ||
+                [],
+
+              zone:
+                activity.zone ||
+                null,
+
+              reason:
+                activity.reason ||
+                'Suspicious activity detected'
+            });
           }
-
-          detectionResults.push({
-            frame: framePath
-              ? path.basename(framePath)
-              : `frame-${index + 1}`,
-
-            activities: activity.activities || [],
-
-            severity: activity.severity || 'low',
-
-            confidence: activity.confidence || 0,
-
-            trackId: activity.track_id ?? null,
-
-            bbox: activity.bbox || [],
-
-            zone: activity.zone || null
-          });
-        });
-      });
-
-      const uniqueActivities = [
-        ...new Set(allActivities)
-      ];
-
-      const severityRank = {
-        low: 0,
-        medium: 1,
-        high: 2,
-        critical: 3
-      };
-
-      let overallSeverity = 'low';
-
-      for (const result of suspiciousResults) {
-        const severity = result.overall_severity || 'low';
-
-        if (
-          severityRank[severity] >
-          severityRank[overallSeverity]
-        ) {
-          overallSeverity = severity;
-        }
+        );
       }
+    );
 
-    // 7. Create incidents
+    const uniqueActivities = [
+      ...new Set(allActivities)
+    ];
+
+    // -----------------------------------------------------
+    // 10. Calculate overall severity
+    // -----------------------------------------------------
+    const severityRank = {
+      low: 0,
+      medium: 1,
+      high: 2,
+      critical: 3
+    };
+
+    let overallSeverity = 'low';
+
+    for (
+      const result of suspiciousResults
+    ) {
+      const severity =
+        result.overall_severity ||
+        'low';
+
+      if (
+        severityRank[severity] >
+        severityRank[overallSeverity]
+      ) {
+        overallSeverity =
+          severity;
+      }
+    }
+
+    // -----------------------------------------------------
+    // 11. Create incidents + alerts
+    // -----------------------------------------------------
     let createdIncidents = [];
 
     if (
       suspiciousResults.length > 0
     ) {
-      logger.info(
+      logger.warn(
         `Creating incidents from ${suspiciousResults.length} suspicious AI results`
       );
 
@@ -405,11 +505,9 @@ const processVideoAsync = async (
       );
     }
 
-    logger.info(
-      `AI detected ${suspiciousResults.length} suspicious frames for ${video.filename}`
-    );
-
-    // 8. Log results
+    // -----------------------------------------------------
+    // 12. Log suspicious results
+    // -----------------------------------------------------
     if (
       suspiciousResults.length > 0
     ) {
@@ -432,35 +530,50 @@ const processVideoAsync = async (
       );
     }
 
-    // 9. Update video
-   await Video.findByIdAndUpdate(
+    // -----------------------------------------------------
+    // 13. Update video
+    // -----------------------------------------------------
+    await Video.findByIdAndUpdate(
       videoId,
       {
-        status: 'completed',
+        status:
+          'completed',
 
-        duration: metadata.duration,
+        duration:
+          metadata.duration,
 
-        resolution: metadata.video
-          ? {
-              width: metadata.video.width,
-              height: metadata.video.height
-            }
-          : null,
+        resolution:
+          metadata.video
+            ? {
+                width:
+                  metadata.video.width,
 
-        framerate: metadata.video?.framerate,
+                height:
+                  metadata.video.height
+              }
+            : null,
 
-        bitrate: metadata.bitrate,
+        framerate:
+          metadata.video?.framerate,
 
-        codec: metadata.video?.codec,
+        bitrate:
+          metadata.bitrate,
 
-        thumbnailPath: thumbnailPath,
+        codec:
+          metadata.video?.codec,
+
+        thumbnailPath:
+          thumbnailPath,
 
         aiAnalysis: {
-          status: 'completed',
+          status:
+            'completed',
 
-          frameCount: framePaths.length,
+          frameCount:
+            framePaths.length,
 
-          analyzedFrames: aiResults.length,
+          analyzedFrames:
+            normalizedAIResults.length,
 
           suspiciousFrames:
             suspiciousResults.length,
@@ -470,29 +583,40 @@ const processVideoAsync = async (
 
           overallSeverity,
 
-          activities: uniqueActivities,
+          activities:
+            uniqueActivities,
 
-          detections: detectionResults,
+          detections:
+            detectionResults,
 
-          model: 'yolov8n',
+          model:
+            'yolov8n',
 
-          processedAt: new Date()
+          processedAt:
+            new Date()
         }
       }
     );
+
     logger.info(
       `Video processed successfully: ${video.filename}`
     );
 
     return {
-      success: true,
+      success:
+        true,
+
       videoId,
+
       frameCount:
         framePaths.length,
+
       aiResultsCount:
-        aiResults.length,
+        normalizedAIResults.length,
+
       suspiciousResultsCount:
         suspiciousResults.length,
+
       incidentsCreated:
         createdIncidents.length
     };
@@ -506,11 +630,20 @@ const processVideoAsync = async (
       await Video.findByIdAndUpdate(
         videoId,
         {
-          status: 'failed',
-          processingError: error.message,
-          'aiAnalysis.status': 'failed',
-          'aiAnalysis.error': error.message,
-          'aiAnalysis.processedAt': new Date()
+          status:
+            'failed',
+
+          processingError:
+            error.message,
+
+          'aiAnalysis.status':
+            'failed',
+
+          'aiAnalysis.error':
+            error.message,
+
+          'aiAnalysis.processedAt':
+            new Date()
         }
       );
     } catch (updateError) {
@@ -520,9 +653,13 @@ const processVideoAsync = async (
     }
 
     return {
-      success: false,
+      success:
+        false,
+
       videoId,
-      error: error.message
+
+      error:
+        error.message
     };
   } finally {
     if (frameDir) {
@@ -570,7 +707,10 @@ const getAllVideos = async (
       filter.incidentId = incidentId;
     }
 
-    if (startDate || endDate) {
+    if (
+      startDate ||
+      endDate
+    ) {
       filter.createdAt = {};
 
       if (startDate) {
@@ -638,7 +778,6 @@ const getAllVideos = async (
       Video.countDocuments(filter)
     ]);
 
-    // Add browser URLs
     const videosWithUrls =
       videos.map(video => {
         const videoObject =
@@ -670,9 +809,14 @@ const getAllVideos = async (
           videosWithUrls,
 
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page:
+            parseInt(page),
+
+          limit:
+            parseInt(limit),
+
           total,
+
           pages:
             Math.ceil(
               total / limit
@@ -738,7 +882,6 @@ const getVideoById = async (
     const videoObject =
       video.toObject();
 
-    // Browser URLs
     videoObject.streamUrl =
       `${req.protocol}://${req.get(
         'host'
@@ -829,11 +972,6 @@ const streamVideo = async (
     const range =
       req.headers.range;
 
-    /*
-     * IMPORTANT:
-     * These headers allow the browser to
-     * play a cross-origin video stream.
-     */
     res.setHeader(
       'Access-Control-Allow-Origin',
       'http://localhost:3000'
@@ -864,9 +1002,6 @@ const streamVideo = async (
       'no-cache'
     );
 
-    /*
-     * Browser requested a specific range.
-     */
     if (range) {
       const parts =
         range
@@ -874,14 +1009,19 @@ const streamVideo = async (
           .split('-');
 
       let start =
-        parseInt(parts[0], 10);
+        parseInt(
+          parts[0],
+          10
+        );
 
       let end =
         parts[1]
-          ? parseInt(parts[1], 10)
+          ? parseInt(
+              parts[1],
+              10
+            )
           : fileSize - 1;
 
-      // Validate range
       if (
         Number.isNaN(start) ||
         start < 0
@@ -893,7 +1033,8 @@ const streamVideo = async (
         Number.isNaN(end) ||
         end >= fileSize
       ) {
-        end = fileSize - 1;
+        end =
+          fileSize - 1;
       }
 
       if (start > end) {
@@ -957,9 +1098,6 @@ const streamVideo = async (
 
       file.pipe(res);
     } else {
-      /*
-       * Browser did not send a Range header.
-       */
       res.status(200);
 
       res.setHeader(
@@ -999,7 +1137,6 @@ const streamVideo = async (
       file.pipe(res);
     }
 
-    // Count stream as a download/view
     try {
       await video.incrementDownloads();
     } catch (error) {
@@ -1057,6 +1194,7 @@ const downloadVideo = async (
       video.path;
 
     if (
+      !filePath ||
       !fs.existsSync(filePath)
     ) {
       return ApiResponse.notFound(
@@ -1319,6 +1457,11 @@ const getVideoStatistics = async (
   }
 };
 
+/**
+ * ---------------------------------------------------------
+ * Exports
+ * ---------------------------------------------------------
+ */
 module.exports = {
   uploadVideo,
   getAllVideos,
